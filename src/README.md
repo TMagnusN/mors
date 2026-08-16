@@ -1,0 +1,237 @@
+# MROS `src` 架構設計（C++23）
+
+本目錄預計承載一個完全獨立設計與實作的現代化西洋棋引擎。UCI、引擎協調、搜尋、棋盤核心、評估與平台最佳化各自有明確邊界。
+
+## 設計目標
+
+- C++23，以 GNU Make 驅動 GCC、Clang 與 MinGW-w64 的 64-bit Release 建置。
+- 搜尋熱路徑無虛擬派發、無例外、無動態配置。
+- `Position::make_move()` / `unmake_move()`、走法產生與 TT 探查保持資料局部性。
+- UCI 只是介面卡；核心不可依賴文字協定、標準輸入輸出或命令列。
+- 先做正確且可測的單執行緒核心，再加入 Lazy SMP、NUMA、NNUE 與 Syzygy。
+- 每個子系統只能依賴比自己更低的層級，禁止 `engine` / `runtime` / `search` 之間形成循環依賴。
+
+## 目錄配置
+
+```text
+src/
+|-- Makefile
+|-- app/
+|   `-- main.cpp
+|-- engine/
+|   |-- engine.hpp
+|   |-- engine.cpp
+|   |-- config.hpp
+|   |-- request.hpp
+|   `-- response.hpp
+|-- protocol/
+|   `-- uci/
+|       |-- session.hpp
+|       |-- session.cpp
+|       |-- parser.hpp
+|       |-- parser.cpp
+|       |-- formatter.hpp
+|       |-- formatter.cpp
+|       |-- option_registry.hpp
+|       `-- option_registry.cpp
+|-- chess/
+|   |-- types.hpp
+|   |-- move.hpp
+|   |-- score.hpp
+|   |-- bitboard.hpp
+|   |-- bitboard.cpp
+|   |-- attacks.hpp
+|   |-- attacks.cpp
+|   |-- position.hpp
+|   |-- position.cpp
+|   |-- state.hpp
+|   |-- zobrist.hpp
+|   |-- zobrist.cpp
+|   |-- movegen.hpp
+|   |-- movegen.cpp
+|   |-- fen.hpp
+|   |-- fen.cpp
+|   `-- perft.hpp
+|-- search/
+|   |-- limits.hpp
+|   |-- result.hpp
+|   |-- searcher.hpp
+|   |-- searcher.cpp
+|   |-- context.hpp
+|   |-- stack.hpp
+|   |-- move_picker.hpp
+|   |-- move_picker.cpp
+|   |-- history.hpp
+|   |-- transposition_table.hpp
+|   |-- transposition_table.cpp
+|   |-- time_manager.hpp
+|   |-- time_manager.cpp
+|   |-- worker.hpp
+|   `-- worker.cpp
+|-- eval/
+|   |-- evaluator.hpp
+|   |-- evaluator.cpp
+|   `-- nnue/
+|       |-- accumulator.hpp
+|       |-- accumulator.cpp
+|       |-- features.hpp
+|       |-- network.hpp
+|       |-- network.cpp
+|       |-- simd.hpp
+|       `-- layers/
+|-- runtime/
+|   |-- thread_pool.hpp
+|   |-- thread_pool.cpp
+|   |-- cpu_features.hpp
+|   |-- cpu_features.cpp
+|   |-- numa.hpp
+|   |-- numa.cpp
+|   |-- aligned_memory.hpp
+|   `-- prefetch.hpp
+|-- tablebase/
+|   `-- syzygy/
+|       |-- probe.hpp
+|       `-- probe.cpp
+|-- support/
+|   |-- assertions.hpp
+|   |-- logger.hpp
+|   |-- logger.cpp
+|   |-- source_location.hpp
+|   `-- version.hpp.in
+`-- tools/
+    |-- benchmark.hpp
+    |-- benchmark.cpp
+    |-- perft_runner.hpp
+    `-- perft_runner.cpp
+```
+
+`tests/`、`benchmarks/` 與網路權重檔應放在專案根目錄，不放進 `src/`。
+
+## 分層與依賴方向
+
+```text
+app -> protocol/uci -> engine -> search -> eval ------> chess
+                               |    |       |             ^
+                               |    `------ tablebase ----|
+                               `---------- runtime -------|
+
+support/platform primitives are available to all lower-level components.
+```
+
+實際規則：
+
+1. `chess` 是純棋局領域核心，不知道 UCI、執行緒、NNUE 檔案或引擎選項。
+2. `eval` 只讀取棋盤與增量狀態，回傳 `Score`，不控制搜尋。
+3. `search` 擁有 alpha-beta、qsearch、走法排序、history、TT 與時間決策。
+4. `runtime` 提供執行緒、CPU feature、NUMA 與對齊記憶體；不包含棋力策略。
+5. `engine` 是唯一的生命週期協調者，負責 position、workers、TT、network 與 callbacks。
+6. `protocol/uci` 將文字命令轉成強型別 `engine::Request`，並將 `engine::Response` 格式化輸出。
+7. `app/main.cpp` 只處理啟動、關閉與最上層錯誤，不放棋力邏輯。
+
+## 核心型別
+
+不要讓所有語意都退化成 `int`。第一階段至少建立：
+
+```cpp
+namespace mros::chess {
+
+enum class Color : std::uint8_t { white, black };
+enum class PieceType : std::uint8_t { none, pawn, knight, bishop, rook, queen, king };
+enum class Square : std::uint8_t { a1, b1 /* ... */, h8, none };
+
+using Bitboard = std::uint64_t;
+using Key = std::uint64_t;
+
+class Move;    // 16/32-bit packed value；提供明確的建構與查詢 API
+class Score;   // 封裝普通分數、mate 與 tablebase 邊界
+class Depth;   // 避免與 ply、selective depth 混用
+
+} // namespace mros::chess
+```
+
+`Move`、`Score`、`Depth` 應是 trivial、可複製的小型值型別，並以 `static_assert` 固定大小。熱路徑的容器採固定容量，例如 `MoveList<256>`；搜尋期間不使用 `std::vector` 擴容。
+
+## C++23 使用原則
+
+- 用 `std::expected` 表達 FEN、UCI 命令、NNUE 檔案載入等可恢復錯誤。
+- 用 `std::span` 傳遞連續資料，用 `std::bit_*`、`std::byteswap` 與 `<bit>` 處理位元資料。
+- 用 `enum class`、concepts 與 `constexpr` 強化走法產生和型別約束。
+- 外層工作執行緒可用 `std::jthread` 管生命週期；節點停止檢查仍用 cache-friendly `std::atomic_bool`。
+- `std::source_location` 用於斷言與診斷；`std::format` 僅限協定或記錄層。
+- 熱路徑函式盡量 `noexcept`，解析與啟動邊界才捕捉例外。
+- 第一版不使用 C++ Modules。模組、編譯器 intrinsic、unity build 與 PGO 的工具鏈成熟度不一致，先以 `.hpp/.cpp` 保持跨編譯器穩定。
+
+## Makefile 建置設計
+
+唯一正式建置入口是 `src/Makefile`。它依目錄列出 source group、把物件輸出至 `build/<config>/...`，最後連結成單一 `mros`（Windows 為 `mros.exe`）；不在原始碼目錄旁產生 `.o` 或相依檔。
+
+第一版目標：
+
+```text
+make                 # 等同 release
+make release         # -O3、NDEBUG，可選 LTO
+make debug           # -O0/-Og、debug symbols、assertions
+make native          # 針對目前 CPU 最佳化的本機版本
+make sanitize        # ASan + UBSan（編譯器支援時）
+make test            # 建置並執行單元測試
+make perft           # 走法產生正確性測試
+make bench           # 固定輸入的效能基準
+make format          # 格式化已追蹤的 C++ 原始碼
+make clean           # 只移除已解析並驗證過的 build 目錄
+```
+
+所有組態必須使用 `-std=c++23`、自動產生 header dependencies（`-MMD -MP`），並將 warnings、最佳化、平台與 ISA flags 分開管理。AVX2/AVX-512 不設成所有檔案共用的 flags，只編譯 NNUE/runtime 的特定 translation unit 或對應 binary variant，避免通用版本意外執行不支援的指令。
+
+## Engine 外部介面草案
+
+```cpp
+namespace mros::engine {
+
+class Engine final {
+public:
+    explicit Engine(Config config);
+    ~Engine();
+
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
+
+    [[nodiscard]] auto set_position(PositionRequest request)
+        -> std::expected<void, Error>;
+    [[nodiscard]] auto start(SearchRequest request) -> SearchHandle;
+    void stop() noexcept;
+    void wait() noexcept;
+    void new_game();
+
+    [[nodiscard]] auto perft(int depth) const -> std::uint64_t;
+};
+
+} // namespace mros::engine
+```
+
+`SearchHandle`/callback 傳遞結構化的 iteration、info 與 best-move 事件；UCI 字串只在 `protocol/uci` 產生。這讓未來加入 GUI、library API 或測試驅動器時，不必侵入搜尋核心。
+
+## 實作順序
+
+1. **Foundation**：`src/Makefile`、warnings/sanitizers、`support`、核心型別與 bitboard。
+2. **Correctness core**：FEN、Position、make/unmake、attacks、movegen、perft；先通過標準 perft suite。
+3. **Usable engine**：Engine facade、UCI parser/session、單執行緒 iterative deepening、基本時間管理。
+4. **Search strength**：TT、qsearch、move picker、history 與 pruning；每次調整都跑 correctness + benchmark。
+5. **Parallelism**：持久 worker pool、Lazy SMP、停止/ponder 狀態機，再做 NUMA。
+6. **Evaluation**：先穩定 evaluator contract，再接 NNUE accumulator、network loader 與 SIMD variants。
+7. **Optional systems**：Syzygy、tuning、PGO、跨平台發行建置。
+
+## 授權與原創性
+
+MROS 的程式碼必須獨立撰寫，不複製、移植或衍生其他西洋棋引擎的原始碼。外部演算法、論文或測試資料若有採用，必須確認授權相容性並在專案文件中標示來源。
+
+- License：GNU Affero General Public License v3.0 or later（`AGPL-3.0-or-later`）
+- Author：Theodore Magnus Øen
+- Copyright：`Copyright (C) 2026 Theodore Magnus Øen`
+
+所有新 `.hpp` 與 `.cpp` 使用以下簡短標頭，完整授權文字放在專案根目錄的 `LICENSE`：
+
+```cpp
+// MROS - a modern C++23 chess engine
+// Copyright (C) 2026 Theodore Magnus Øen
+// SPDX-License-Identifier: AGPL-3.0-or-later
+```
