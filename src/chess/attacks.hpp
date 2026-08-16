@@ -9,6 +9,9 @@
 #include <array>
 #include <cassert>
 
+#if defined(MROS_PEXT)
+#include "detail/pext.hpp"
+#endif
 #if defined(MROS_DUAL_HQ)
 #include "detail/dual_hq.hpp"
 #endif
@@ -18,6 +21,9 @@
 
 #if defined(MROS_HYBRID) && (!defined(MROS_DUAL_HQ) || !defined(MROS_MAGIC))
 #error "MROS_HYBRID requires both MROS_DUAL_HQ and MROS_MAGIC"
+#endif
+#if defined(MROS_PEXT) && (defined(MROS_DUAL_HQ) || defined(MROS_MAGIC))
+#error "MROS_PEXT is a standalone slider backend"
 #endif
 
 namespace mros {
@@ -71,7 +77,15 @@ template<PieceType Type>
     static_assert(Type == BISHOP || Type == ROOK || Type == QUEEN);
     assert(detail::attacks_ready() && is_ok(square));
 
-#if defined(MROS_HYBRID)
+#if defined(MROS_PEXT)
+    if constexpr (Type == BISHOP)
+        return detail::bishop_pext_entries[square].lookup(occupied);
+    else if constexpr (Type == ROOK)
+        return detail::rook_pext_entries[square].lookup(occupied);
+    else
+        return detail::bishop_pext_entries[square].lookup(occupied)
+             | detail::rook_pext_entries[square].lookup(occupied);
+#elif defined(MROS_HYBRID)
     if constexpr (Type == BISHOP)
         return detail::magic_attacks<BISHOP>(square, occupied);
     else if constexpr (Type == ROOK)
@@ -98,7 +112,7 @@ template<PieceType Type>
              | sliding_attacks<ROOK>(square, occupied);
     }
 #else
-#error "Select MROS_DUAL_HQ or MROS_MAGIC"
+#error "Select MROS_PEXT, MROS_DUAL_HQ or MROS_MAGIC"
 #endif
 }
 

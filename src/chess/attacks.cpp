@@ -19,6 +19,10 @@ namespace detail {
 std::array<Bitboard, BISHOP_ATTACK_TABLE_SIZE> bishop_magic_attacks{};
 std::array<Bitboard, ROOK_ATTACK_TABLE_SIZE> rook_magic_attacks{};
 #endif
+#if defined(MROS_PEXT)
+std::array<std::uint16_t, BISHOP_ATTACK_TABLE_SIZE> bishop_pext_attacks{};
+std::array<std::uint16_t, ROOK_ATTACK_TABLE_SIZE> rook_pext_attacks{};
+#endif
 
 } // namespace detail
 
@@ -187,9 +191,59 @@ void initialize_magic_backend() {
 
 #endif
 
+#if defined(MROS_PEXT)
+
+template<std::size_t N>
+void initialize_pext_table(
+    const std::array<detail::GeneratedMagic, SQUARE_NB>& magics,
+    const std::array<detail::PextEntry, SQUARE_NB>& entries,
+    std::array<std::uint16_t, N>& table,
+    bool bishop
+) {
+    for (int index = 0; index < SQUARE_NB; ++index) {
+        const Square square = Square(index);
+        const detail::GeneratedMagic& magic = magics[index];
+        const detail::PextEntry& entry = entries[index];
+        Bitboard subset = EMPTY_BB;
+
+        do {
+            const Bitboard attacks = bishop
+                ? detail::reference_bishop_attacks(square, subset)
+                : detail::reference_rook_attacks(square, subset);
+            const std::uint64_t packed = _pext_u64(attacks, entry.attack_mask);
+            const std::size_t attack_index =
+                magic.offset + std::size_t(_pext_u64(subset, entry.occupancy_mask));
+
+            assert(packed <= 0xFFFFU && attack_index < table.size());
+            table[attack_index] = std::uint16_t(packed);
+            subset = (subset - entry.occupancy_mask) & entry.occupancy_mask;
+        } while (subset != EMPTY_BB);
+    }
+}
+
+void initialize_pext_backend() {
+    initialize_pext_table(
+        detail::BISHOP_MAGICS,
+        detail::bishop_pext_entries,
+        detail::bishop_pext_attacks,
+        true
+    );
+    initialize_pext_table(
+        detail::ROOK_MAGICS,
+        detail::rook_pext_entries,
+        detail::rook_pext_attacks,
+        false
+    );
+}
+
+#endif
+
 void initialize_slider_backend() {
 #if defined(MROS_MAGIC)
     initialize_magic_backend();
+#endif
+#if defined(MROS_PEXT)
+    initialize_pext_backend();
 #endif
 }
 
@@ -257,6 +311,42 @@ const std::array<detail::DualHqEntry, SQUARE_NB> detail::dual_hq_entries = []() 
         entry.reversed_origin = std::byteswap(entry.origin);
         entry.rank_attacks_lookup = rank_attacks_table[file_of(square)].data();
         entry.rank_shift = 8U * unsigned(rank_of(square));
+    }
+
+    return entries;
+}();
+
+#endif
+
+#if defined(MROS_PEXT)
+
+const std::array<detail::PextEntry, SQUARE_NB> detail::bishop_pext_entries = []() constexpr {
+    std::array<detail::PextEntry, SQUARE_NB> entries{};
+
+    for (int index = 0; index < SQUARE_NB; ++index) {
+        const Square square = Square(index);
+        const detail::GeneratedMagic& magic = detail::BISHOP_MAGICS[index];
+        detail::PextEntry& entry = entries[index];
+        entry.occupancy_mask = magic.mask;
+        entry.attack_mask = complete_line(square, 1, 1, -1, -1)
+                          | complete_line(square, -1, 1, 1, -1);
+        entry.attacks = detail::bishop_pext_attacks.data() + magic.offset;
+    }
+
+    return entries;
+}();
+
+const std::array<detail::PextEntry, SQUARE_NB> detail::rook_pext_entries = []() constexpr {
+    std::array<detail::PextEntry, SQUARE_NB> entries{};
+
+    for (int index = 0; index < SQUARE_NB; ++index) {
+        const Square square = Square(index);
+        const detail::GeneratedMagic& magic = detail::ROOK_MAGICS[index];
+        detail::PextEntry& entry = entries[index];
+        entry.occupancy_mask = magic.mask;
+        entry.attack_mask = complete_line(square, 0, 1, 0, -1)
+                          | complete_line(square, 1, 0, -1, 0);
+        entry.attacks = detail::rook_pext_attacks.data() + magic.offset;
     }
 
     return entries;

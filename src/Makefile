@@ -27,11 +27,14 @@ ifeq ($(ARCH),avx2)
 else ifeq ($(ARCH),hybrid)
     CPPFLAGS += -DMROS_HYBRID -DMROS_DUAL_HQ -DMROS_MAGIC
     ARCH_FLAGS := -mavx2
+else ifeq ($(ARCH),pext)
+    CPPFLAGS += -DMROS_PEXT
+    ARCH_FLAGS := -mbmi2
 else ifeq ($(ARCH),generic)
     CPPFLAGS += -DMROS_MAGIC
     ARCH_FLAGS :=
 else
-    $(error Unsupported ARCH '$(ARCH)'; expected generic, avx2 or hybrid)
+    $(error Unsupported ARCH '$(ARCH)'; expected generic, avx2, hybrid or pext)
 endif
 
 ifeq ($(CONFIG),debug)
