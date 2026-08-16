@@ -180,6 +180,14 @@ make format          # 格式化已追蹤的 C++ 原始碼
 make clean           # 只移除已解析並驗證過的 build 目錄
 ```
 
+目前 slider attack backend 以 `ARCH` 選擇：
+
+```text
+ARCH=generic  # Magic bitboards，無 AVX2 需求
+ARCH=avx2     # 純 Dual Hyperbola Quintessence
+ARCH=hybrid   # bishop/rook 使用 Magic；queen/combined 使用 Dual HQ
+```
+
 所有組態必須使用 `-std=c++23`、自動產生 header dependencies（`-MMD -MP`），並將 warnings、最佳化、平台與 ISA flags 分開管理。AVX2/AVX-512 不設成所有檔案共用的 flags，只編譯 NNUE/runtime 的特定 translation unit 或對應 binary variant，避免通用版本意外執行不支援的指令。
 
 ## Engine 外部介面草案

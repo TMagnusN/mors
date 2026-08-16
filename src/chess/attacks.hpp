@@ -11,8 +11,13 @@
 
 #if defined(MROS_DUAL_HQ)
 #include "detail/dual_hq.hpp"
-#elif defined(MROS_MAGIC)
+#endif
+#if defined(MROS_MAGIC)
 #include "detail/generated_magics.hpp"
+#endif
+
+#if defined(MROS_HYBRID) && (!defined(MROS_DUAL_HQ) || !defined(MROS_MAGIC))
+#error "MROS_HYBRID requires both MROS_DUAL_HQ and MROS_MAGIC"
 #endif
 
 namespace mros {
@@ -44,6 +49,19 @@ extern std::array<Bitboard, ROOK_ATTACK_TABLE_SIZE> rook_magic_attacks;
     return magic.offset + (((occupied & magic.mask) * magic.magic) >> magic.shift);
 }
 
+template<PieceType Type>
+[[nodiscard]] inline Bitboard magic_attacks(Square square, Bitboard occupied) noexcept {
+    static_assert(Type == BISHOP || Type == ROOK);
+
+    if constexpr (Type == BISHOP) {
+        const GeneratedMagic& magic = BISHOP_MAGICS[square];
+        return bishop_magic_attacks[magic_index(magic, occupied)];
+    } else {
+        const GeneratedMagic& magic = ROOK_MAGICS[square];
+        return rook_magic_attacks[magic_index(magic, occupied)];
+    }
+}
+
 #endif
 
 } // namespace detail
@@ -53,7 +71,16 @@ template<PieceType Type>
     static_assert(Type == BISHOP || Type == ROOK || Type == QUEEN);
     assert(detail::attacks_ready() && is_ok(square));
 
-#if defined(MROS_DUAL_HQ)
+#if defined(MROS_HYBRID)
+    if constexpr (Type == BISHOP)
+        return detail::magic_attacks<BISHOP>(square, occupied);
+    else if constexpr (Type == ROOK)
+        return detail::magic_attacks<ROOK>(square, occupied);
+    else {
+        const auto [bishop, rook] = detail::dual_hq_entries[square].attacks(occupied);
+        return bishop | rook;
+    }
+#elif defined(MROS_DUAL_HQ)
     const auto [bishop, rook] = detail::dual_hq_entries[square].attacks(occupied);
     if constexpr (Type == BISHOP)
         return bishop;
@@ -63,11 +90,9 @@ template<PieceType Type>
         return bishop | rook;
 #elif defined(MROS_MAGIC)
     if constexpr (Type == BISHOP) {
-        const detail::GeneratedMagic& magic = detail::BISHOP_MAGICS[square];
-        return detail::bishop_magic_attacks[detail::magic_index(magic, occupied)];
+        return detail::magic_attacks<BISHOP>(square, occupied);
     } else if constexpr (Type == ROOK) {
-        const detail::GeneratedMagic& magic = detail::ROOK_MAGICS[square];
-        return detail::rook_magic_attacks[detail::magic_index(magic, occupied)];
+        return detail::magic_attacks<ROOK>(square, occupied);
     } else {
         return sliding_attacks<BISHOP>(square, occupied)
              | sliding_attacks<ROOK>(square, occupied);

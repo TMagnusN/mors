@@ -24,11 +24,14 @@ COMMON_FLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 ifeq ($(ARCH),avx2)
     CPPFLAGS += -DMROS_DUAL_HQ
     ARCH_FLAGS := -mavx2
+else ifeq ($(ARCH),hybrid)
+    CPPFLAGS += -DMROS_HYBRID -DMROS_DUAL_HQ -DMROS_MAGIC
+    ARCH_FLAGS := -mavx2
 else ifeq ($(ARCH),generic)
     CPPFLAGS += -DMROS_MAGIC
     ARCH_FLAGS :=
 else
-    $(error Unsupported ARCH '$(ARCH)'; expected generic or avx2)
+    $(error Unsupported ARCH '$(ARCH)'; expected generic, avx2 or hybrid)
 endif
 
 ifeq ($(CONFIG),debug)

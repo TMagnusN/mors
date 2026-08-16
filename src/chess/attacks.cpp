@@ -148,9 +148,9 @@ inline constexpr auto rank_attacks_table = []() constexpr {
     return table;
 }();
 
-void initialize_slider_backend() {}
+#endif
 
-#else
+#if defined(MROS_MAGIC)
 
 template<std::size_t N>
 void initialize_magic_table(
@@ -172,7 +172,7 @@ void initialize_magic_table(
     }
 }
 
-void initialize_slider_backend() {
+void initialize_magic_backend() {
     initialize_magic_table(
         detail::BISHOP_MAGICS,
         detail::bishop_magic_attacks,
@@ -186,6 +186,12 @@ void initialize_slider_backend() {
 }
 
 #endif
+
+void initialize_slider_backend() {
+#if defined(MROS_MAGIC)
+    initialize_magic_backend();
+#endif
+}
 
 void initialize_geometry() {
     constexpr std::array<std::array<int, 2>, 8> KNIGHT_OFFSETS = {{
