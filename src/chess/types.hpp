@@ -9,6 +9,8 @@
 
 namespace mros {
 
+using Key = std::uint64_t;
+
 // ============================================================================
 // Color
 // ============================================================================
@@ -245,7 +247,9 @@ enum CastlingRights : std::uint8_t {
     BLACK_QUEEN_SIDE = 8,
     WHITE_CASTLING   = WHITE_KING_SIDE | WHITE_QUEEN_SIDE,
     BLACK_CASTLING   = BLACK_KING_SIDE | BLACK_QUEEN_SIDE,
-    ANY_CASTLING     = WHITE_CASTLING | BLACK_CASTLING
+    ANY_CASTLING     = WHITE_CASTLING | BLACK_CASTLING,
+
+    CASTLING_RIGHT_NB = 16
 };
 
 constexpr CastlingRights operator|(CastlingRights lhs, CastlingRights rhs) noexcept {
@@ -266,6 +270,7 @@ constexpr CastlingRights& operator|=(CastlingRights& lhs, CastlingRights rhs) no
 // ============================================================================
 
 static_assert(sizeof(Color)          == 1);
+static_assert(sizeof(Key)            == 8);
 static_assert(sizeof(PieceType)      == 1);
 static_assert(sizeof(Piece)          == 1);
 static_assert(sizeof(File)           == 1);

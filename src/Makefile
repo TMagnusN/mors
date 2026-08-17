@@ -8,11 +8,25 @@ SHELL := powershell.exe
 CXX ?= g++
 ARCH ?= generic
 CONFIG ?= release
+LTO ?= 1
+
+ifeq ($(LTO),1)
+else ifneq ($(LTO),0)
+    $(error Unsupported LTO '$(LTO)'; expected 0 or 1)
+endif
 
 PROJECT_ROOT := ..
 BUILD_ROOT := $(PROJECT_ROOT)/build
 BUILD_DIR := $(BUILD_ROOT)/$(CONFIG)-$(ARCH)
-OBJ_DIR := $(BUILD_DIR)/obj
+OBJ_VARIANT := default
+
+ifeq ($(CONFIG),release)
+    ifeq ($(LTO),1)
+        OBJ_VARIANT := lto
+    endif
+endif
+
+OBJ_DIR := $(BUILD_DIR)/obj/$(OBJ_VARIANT)
 
 EXE_EXT := .exe
 PERFT_TARGET := $(BUILD_DIR)/mros-perft-$(ARCH)$(EXE_EXT)
@@ -44,6 +58,10 @@ else ifeq ($(CONFIG),sanitize)
     LINK_FLAGS := -fsanitize=address -fsanitize=undefined
 else ifeq ($(CONFIG),release)
     CONFIG_FLAGS := -O3 -DNDEBUG
+    ifeq ($(LTO),1)
+        CONFIG_FLAGS += -flto=auto
+        LINK_FLAGS += -flto=auto
+    endif
 else
     $(error Unsupported CONFIG '$(CONFIG)'; expected debug, sanitize or release)
 endif
@@ -54,13 +72,14 @@ LDFLAGS := $(LINK_FLAGS)
 CORE_SOURCES := \
     chess/bitboard.cpp \
     chess/attacks.cpp \
+    chess/zobrist.cpp \
     chess/position.cpp \
     chess/movegen.cpp \
     chess/perft.cpp
 
 CORE_OBJECTS := $(addprefix $(OBJ_DIR)/,$(CORE_SOURCES:.cpp=.o))
 PERFT_OBJECT := $(OBJ_DIR)/tools/perft_main.o
-TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/movegen_tests.o
+TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/zobrist_tests.o $(OBJ_DIR)/tests/movegen_tests.o
 DEPENDENCIES := $(CORE_OBJECTS:.o=.d) $(PERFT_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
 
 .DEFAULT_GOAL := all

@@ -19,6 +19,7 @@ inline constexpr std::string_view START_FEN =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 struct StateInfo final {
+    Key key = 0;
     CastlingRights castling_rights = NO_CASTLING;
     Square ep_square = SQ_NONE;
     std::uint16_t halfmove_clock = 0;
@@ -41,6 +42,7 @@ public:
     [[nodiscard]] Bitboard pieces(Color color, PieceType type) const noexcept;
 
     [[nodiscard]] Color side_to_move() const noexcept { return side_to_move_; }
+    [[nodiscard]] Key key() const noexcept { return key_; }
     [[nodiscard]] CastlingRights castling_rights() const noexcept { return castling_rights_; }
     [[nodiscard]] bool can_castle(CastlingRights rights) const noexcept;
     [[nodiscard]] Square ep_square() const noexcept { return ep_square_; }
@@ -76,11 +78,13 @@ private:
     void remove_piece(Square square) noexcept;
     void move_piece(Square from, Square to) noexcept;
     void clear_castling_right(CastlingRights right) noexcept;
+    [[nodiscard]] Key compute_key() const noexcept;
 
     std::array<Piece, SQUARE_NB> board_{};
     std::array<Bitboard, PIECE_NB> piece_bitboards_{};
     std::array<Bitboard, COLOR_NB> color_bitboards_{};
     Bitboard occupied_ = EMPTY_BB;
+    Key key_ = 0;
 
     Color side_to_move_ = WHITE;
     CastlingRights castling_rights_ = NO_CASTLING;

@@ -13,9 +13,8 @@ namespace mros {
 // checked here; king safety for all other moves is checked by generate_legal.
 void generate_pseudo_legal(const Position& position, MoveList& moves) noexcept;
 
-// Correctness-first legal generator. It deliberately uses make/unmake as the
-// final king-safety oracle; its public contract remains suitable for replacing
-// the internals with pin/check masks later.
+// Generates legal moves directly from check, pin, and evasion masks. Only the
+// en-passant edge case uses make/unmake as a final king-safety oracle.
 void generate_legal(Position& position, MoveList& moves) noexcept;
 
 } // namespace mros

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "position.hpp"
+#include "zobrist.hpp"
 
 #include <cassert>
 #include <charconv>
@@ -148,6 +149,8 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
         return std::unexpected("FEN must contain exactly one king per color");
     }
 
+    position.key_ = position.compute_key();
+
     if (!position.is_consistent())
         return std::unexpected("inconsistent FEN position");
 
@@ -259,12 +262,15 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
     assert(is_ok(moving_piece) && color_of(moving_piece) == us);
 
     state.castling_rights = castling_rights_;
+    state.key = key_;
     state.ep_square = ep_square_;
     state.halfmove_clock = halfmove_clock_;
     state.fullmove_number = fullmove_number_;
     state.captured_piece = NO_PIECE;
     state.captured_square = SQ_NONE;
 
+    if (ep_square_ != SQ_NONE)
+        key_ ^= zobrist::en_passant(file_of(ep_square_));
     ep_square_ = SQ_NONE;
     ++halfmove_clock_;
 
@@ -280,6 +286,7 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
         remove_piece(to);
     }
 
+    const CastlingRights old_castling_rights = castling_rights_;
     if (type_of(moving_piece) == KING)
         clear_castling_right(us == WHITE ? WHITE_CASTLING : BLACK_CASTLING);
 
@@ -287,6 +294,11 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
     if (from == H1 || to == H1) clear_castling_right(WHITE_KING_SIDE);
     if (from == A8 || to == A8) clear_castling_right(BLACK_QUEEN_SIDE);
     if (from == H8 || to == H8) clear_castling_right(BLACK_KING_SIDE);
+
+    if (castling_rights_ != old_castling_rights) {
+        key_ ^= zobrist::castling(old_castling_rights);
+        key_ ^= zobrist::castling(castling_rights_);
+    }
 
     switch (move.type()) {
     case NORMAL:
@@ -318,8 +330,10 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
 
     if (type_of(moving_piece) == PAWN) {
         halfmove_clock_ = 0;
-        if (int(to) - int(from) == 16 || int(from) - int(to) == 16)
+        if (int(to) - int(from) == 16 || int(from) - int(to) == 16) {
             ep_square_ = from + pawn_push(us);
+            key_ ^= zobrist::en_passant(file_of(ep_square_));
+        }
     }
 
     if (state.captured_piece != NO_PIECE)
@@ -328,6 +342,7 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
     if (us == BLACK)
         ++fullmove_number_;
     side_to_move_ = ~us;
+    key_ ^= zobrist::side();
     assert(is_consistent());
 }
 
@@ -338,38 +353,88 @@ void Position::undo_move(Move move, const StateInfo& state) noexcept {
     const Square from = move.from();
     const Square to = move.to();
 
+    const auto put_piece_unkeyed = [this](Piece piece, Square square) noexcept {
+        assert(is_ok(piece) && is_ok(square) && board_[square] == NO_PIECE);
+        const Bitboard bit = square_bb(square);
+        board_[square] = piece;
+        piece_bitboards_[piece] |= bit;
+        color_bitboards_[color_of(piece)] |= bit;
+        occupied_ |= bit;
+    };
+
+    const auto remove_piece_unkeyed = [this](Square square) noexcept {
+        assert(is_ok(square));
+        const Piece piece = board_[square];
+        assert(is_ok(piece));
+        const Bitboard bit = square_bb(square);
+        board_[square] = NO_PIECE;
+        piece_bitboards_[piece] &= ~bit;
+        color_bitboards_[color_of(piece)] &= ~bit;
+        occupied_ &= ~bit;
+    };
+
+    const auto move_piece_unkeyed = [this](Square source, Square destination) noexcept {
+        assert(is_ok(source) && is_ok(destination)
+               && board_[source] != NO_PIECE && board_[destination] == NO_PIECE);
+        const Piece piece = board_[source];
+        const Bitboard move_mask = square_bb(source) | square_bb(destination);
+        board_[source] = NO_PIECE;
+        board_[destination] = piece;
+        piece_bitboards_[piece] ^= move_mask;
+        color_bitboards_[color_of(piece)] ^= move_mask;
+        occupied_ ^= move_mask;
+    };
+
     switch (move.type()) {
     case NORMAL:
-        move_piece(to, from);
+        move_piece_unkeyed(to, from);
         break;
 
     case PROMOTION:
-        remove_piece(to);
-        put_piece(make_piece(us, PAWN), from);
+        remove_piece_unkeyed(to);
+        put_piece_unkeyed(make_piece(us, PAWN), from);
         break;
 
     case EN_PASSANT:
-        move_piece(to, from);
+        move_piece_unkeyed(to, from);
         break;
 
     case CASTLING: {
         const bool king_side = file_of(to) == FILE_G;
         const Square rook_from = relative_square_unchecked(us, king_side ? H1 : A1);
         const Square rook_to = relative_square_unchecked(us, king_side ? F1 : D1);
-        move_piece(to, from);
-        move_piece(rook_to, rook_from);
+        move_piece_unkeyed(to, from);
+        move_piece_unkeyed(rook_to, rook_from);
         break;
     }
     }
 
     if (state.captured_piece != NO_PIECE)
-        put_piece(state.captured_piece, state.captured_square);
+        put_piece_unkeyed(state.captured_piece, state.captured_square);
 
     castling_rights_ = state.castling_rights;
     ep_square_ = state.ep_square;
     halfmove_clock_ = state.halfmove_clock;
     fullmove_number_ = state.fullmove_number;
+    key_ = state.key;
     assert(is_consistent());
+}
+
+Key Position::compute_key() const noexcept {
+    Key result = zobrist::castling(castling_rights_);
+
+    for (int index = 0; index < SQUARE_NB; ++index) {
+        const Piece piece = board_[index];
+        if (piece != NO_PIECE)
+            result ^= zobrist::piece_square(piece, Square(index));
+    }
+
+    if (side_to_move_ == BLACK)
+        result ^= zobrist::side();
+    if (ep_square_ != SQ_NONE)
+        result ^= zobrist::en_passant(file_of(ep_square_));
+
+    return result;
 }
 
 bool Position::is_consistent() const noexcept {
@@ -398,6 +463,7 @@ bool Position::is_consistent() const noexcept {
     return expected_pieces == piece_bitboards_
         && expected_colors == color_bitboards_
         && expected_occupied == occupied_
+        && key_ == compute_key()
         && (color_bitboards_[WHITE] & color_bitboards_[BLACK]) == EMPTY_BB
         && popcount(pieces(WHITE, KING)) == 1
         && popcount(pieces(BLACK, KING)) == 1;
@@ -410,6 +476,7 @@ void Position::put_piece(Piece piece, Square square) noexcept {
     piece_bitboards_[piece] |= bit;
     color_bitboards_[color_of(piece)] |= bit;
     occupied_ |= bit;
+    key_ ^= zobrist::piece_square(piece, square);
 }
 
 void Position::remove_piece(Square square) noexcept {
@@ -421,6 +488,7 @@ void Position::remove_piece(Square square) noexcept {
     piece_bitboards_[piece] &= ~bit;
     color_bitboards_[color_of(piece)] &= ~bit;
     occupied_ &= ~bit;
+    key_ ^= zobrist::piece_square(piece, square);
 }
 
 void Position::move_piece(Square from, Square to) noexcept {
@@ -432,6 +500,8 @@ void Position::move_piece(Square from, Square to) noexcept {
     piece_bitboards_[piece] ^= move_mask;
     color_bitboards_[color_of(piece)] ^= move_mask;
     occupied_ ^= move_mask;
+    key_ ^= zobrist::piece_square(piece, from);
+    key_ ^= zobrist::piece_square(piece, to);
 }
 
 void Position::clear_castling_right(CastlingRights right) noexcept {

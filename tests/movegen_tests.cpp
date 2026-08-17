@@ -4,6 +4,7 @@
 
 #include "chess/perft.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -46,9 +47,84 @@ bool run_case(const PerftCase& test) {
     return true;
 }
 
+bool cross_check_legal_moves(mros::Position& position, int depth) {
+    mros::MoveList actual;
+    mros::generate_legal(position, actual);
+
+    mros::MoveList pseudo;
+    mros::generate_pseudo_legal(position, pseudo);
+
+    std::array<std::uint16_t, mros::MAX_MOVES> actual_raw{};
+    std::array<std::uint16_t, mros::MAX_MOVES> reference_raw{};
+    std::size_t reference_size = 0;
+
+    for (std::size_t index = 0; index < actual.size(); ++index)
+        actual_raw[index] = actual[index].raw();
+
+    const mros::Color us = position.side_to_move();
+    const mros::Color them = ~us;
+    for (const mros::Move move : pseudo) {
+        mros::StateInfo state;
+        position.do_move(move, state);
+        const bool legal = !position.is_square_attacked(position.king_square(us), them);
+        position.undo_move(move, state);
+
+        if (legal)
+            reference_raw[reference_size++] = move.raw();
+    }
+
+    std::sort(actual_raw.begin(), actual_raw.begin() + actual.size());
+    std::sort(reference_raw.begin(), reference_raw.begin() + reference_size);
+    if (actual.size() != reference_size
+        || !std::equal(actual_raw.begin(), actual_raw.begin() + actual.size(),
+                       reference_raw.begin())) {
+        std::cerr << "FAIL movegen cross-check: " << position.fen()
+                  << " direct=" << actual.size()
+                  << " reference=" << reference_size << '\n';
+        return false;
+    }
+
+    if (depth == 0)
+        return true;
+
+    for (const mros::Move move : actual) {
+        mros::StateInfo state;
+        position.do_move(move, state);
+        const bool passed = cross_check_legal_moves(position, depth - 1);
+        position.undo_move(move, state);
+        if (!passed)
+            return false;
+    }
+    return true;
+}
+
+bool run_movegen_cross_checks() {
+    struct CrossCheckCase final {
+        std::string_view fen;
+        int depth;
+    };
+
+    constexpr std::array<CrossCheckCase, 4> CASES = {{
+        {mros::START_FEN, 2},
+        {"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10", 1},
+        {"4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 2},
+        {"4k3/P7/8/8/8/8/8/4K3 w - - 0 1", 1}
+    }};
+
+    for (const CrossCheckCase& test : CASES) {
+        auto parsed = mros::Position::from_fen(test.fen);
+        if (!parsed || !cross_check_legal_moves(*parsed, test.depth))
+            return false;
+    }
+
+    std::cout << "PASS movegen cross-check\n";
+    return true;
+}
+
 } // namespace
 
 bool run_attacks_tests();
+bool run_zobrist_tests();
 
 int main() {
     mros::initialize_attacks();
@@ -87,6 +163,8 @@ int main() {
     }};
 
     bool passed = run_attacks_tests();
+    passed &= run_zobrist_tests();
+    passed &= run_movegen_cross_checks();
     for (const PerftCase& test : CASES)
         passed &= run_case(test);
 
