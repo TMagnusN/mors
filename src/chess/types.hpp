@@ -10,6 +10,31 @@
 namespace mros {
 
 using Key = std::uint64_t;
+using Value = std::int32_t;
+using Depth = std::int32_t;
+
+inline constexpr Value VALUE_NONE     = 32'002;
+inline constexpr Value VALUE_INFINITE = 32'001;
+inline constexpr Value VALUE_MATE     = 32'000;
+
+inline constexpr Depth DEPTH_QS         = 0;
+inline constexpr Depth DEPTH_UNSEARCHED = -2;
+
+
+// ============================================================================
+// Search bound
+// ============================================================================
+
+enum Bound : std::uint8_t {
+    BOUND_NONE,
+    BOUND_UPPER,
+    BOUND_LOWER,
+    BOUND_EXACT = BOUND_UPPER | BOUND_LOWER
+};
+
+constexpr bool is_ok(Bound bound) noexcept {
+    return bound <= BOUND_EXACT;
+}
 
 // ============================================================================
 // Color
@@ -271,6 +296,9 @@ constexpr CastlingRights& operator|=(CastlingRights& lhs, CastlingRights rhs) no
 
 static_assert(sizeof(Color)          == 1);
 static_assert(sizeof(Key)            == 8);
+static_assert(sizeof(Value)          == 4);
+static_assert(sizeof(Depth)          == 4);
+static_assert(sizeof(Bound)          == 1);
 static_assert(sizeof(PieceType)      == 1);
 static_assert(sizeof(Piece)          == 1);
 static_assert(sizeof(File)           == 1);

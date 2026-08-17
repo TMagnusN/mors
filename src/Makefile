@@ -31,6 +31,7 @@ OBJ_DIR := $(BUILD_DIR)/obj/$(OBJ_VARIANT)
 EXE_EXT := .exe
 PERFT_TARGET := $(BUILD_DIR)/mros-perft-$(ARCH)$(EXE_EXT)
 TEST_TARGET := $(BUILD_DIR)/mros-tests-$(ARCH)$(EXE_EXT)
+TT_BENCH_TARGET := $(BUILD_DIR)/mros-ttbench-$(ARCH)$(EXE_EXT)
 
 CPPFLAGS := -I.
 COMMON_FLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -75,16 +76,18 @@ CORE_SOURCES := \
     chess/zobrist.cpp \
     chess/position.cpp \
     chess/movegen.cpp \
-    chess/perft.cpp
+    chess/perft.cpp \
+    search/tt.cpp
 
 CORE_OBJECTS := $(addprefix $(OBJ_DIR)/,$(CORE_SOURCES:.cpp=.o))
 PERFT_OBJECT := $(OBJ_DIR)/tools/perft_main.o
-TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/zobrist_tests.o $(OBJ_DIR)/tests/movegen_tests.o
-DEPENDENCIES := $(CORE_OBJECTS:.o=.d) $(PERFT_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
+TT_BENCH_OBJECT := $(OBJ_DIR)/tools/tt_bench.o
+TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/zobrist_tests.o $(OBJ_DIR)/tests/tt_tests.o $(OBJ_DIR)/tests/movegen_tests.o
+DEPENDENCIES := $(CORE_OBJECTS:.o=.d) $(PERFT_OBJECT:.o=.d) $(TT_BENCH_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build release debug sanitize test test-run perft clean
+.PHONY: all build release debug sanitize test test-run perft ttbench ttbench-run clean
 
 all: release
 
@@ -109,11 +112,21 @@ perft:
 	$(MAKE) CONFIG=release ARCH=$(ARCH) build
 	& '$(BUILD_ROOT)/release-$(ARCH)/mros-perft-$(ARCH)$(EXE_EXT)' 5
 
+ttbench:
+	$(MAKE) CONFIG=release ARCH=$(ARCH) ttbench-run
+
+ttbench-run: $(TT_BENCH_TARGET)
+	& '$(TT_BENCH_TARGET)'
+
 $(PERFT_TARGET): $(CORE_OBJECTS) $(PERFT_OBJECT)
 	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 $(TEST_TARGET): $(CORE_OBJECTS) $(TEST_OBJECTS)
+	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
+	$(CXX) $^ $(LDFLAGS) -o $@
+
+$(TT_BENCH_TARGET): $(OBJ_DIR)/search/tt.o $(TT_BENCH_OBJECT)
 	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
 	$(CXX) $^ $(LDFLAGS) -o $@
 

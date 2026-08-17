@@ -125,6 +125,7 @@ bool run_movegen_cross_checks() {
 
 bool run_attacks_tests();
 bool run_zobrist_tests();
+bool run_tt_tests();
 
 int main() {
     mros::initialize_attacks();
@@ -164,6 +165,7 @@ int main() {
 
     bool passed = run_attacks_tests();
     passed &= run_zobrist_tests();
+    passed &= run_tt_tests();
     passed &= run_movegen_cross_checks();
     for (const PerftCase& test : CASES)
         passed &= run_case(test);
