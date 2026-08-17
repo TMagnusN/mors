@@ -32,6 +32,7 @@ EXE_EXT := .exe
 PERFT_TARGET := $(BUILD_DIR)/mros-perft-$(ARCH)$(EXE_EXT)
 TEST_TARGET := $(BUILD_DIR)/mros-tests-$(ARCH)$(EXE_EXT)
 TT_BENCH_TARGET := $(BUILD_DIR)/mros-ttbench-$(ARCH)$(EXE_EXT)
+ENGINE_TARGET := $(BUILD_DIR)/mros-$(ARCH)$(EXE_EXT)
 
 CPPFLAGS := -I.
 COMMON_FLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -77,21 +78,28 @@ CORE_SOURCES := \
     chess/position.cpp \
     chess/movegen.cpp \
     chess/perft.cpp \
+    eval/nnue/network.cpp \
+    eval/nnue/worker.cpp \
+    search/search.cpp \
+    search/see.cpp \
+    search/time.cpp \
     search/tt.cpp
 
 CORE_OBJECTS := $(addprefix $(OBJ_DIR)/,$(CORE_SOURCES:.cpp=.o))
 PERFT_OBJECT := $(OBJ_DIR)/tools/perft_main.o
 TT_BENCH_OBJECT := $(OBJ_DIR)/tools/tt_bench.o
-TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/zobrist_tests.o $(OBJ_DIR)/tests/tt_tests.o $(OBJ_DIR)/tests/movegen_tests.o
-DEPENDENCIES := $(CORE_OBJECTS:.o=.d) $(PERFT_OBJECT:.o=.d) $(TT_BENCH_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
+UCI_OBJECT := $(OBJ_DIR)/uci.o
+ENGINE_OBJECTS := $(OBJ_DIR)/main.o $(UCI_OBJECT)
+TEST_OBJECTS := $(OBJ_DIR)/tests/attacks_tests.o $(OBJ_DIR)/tests/zobrist_tests.o $(OBJ_DIR)/tests/score_tests.o $(OBJ_DIR)/tests/see_tests.o $(OBJ_DIR)/tests/tt_tests.o $(OBJ_DIR)/tests/nnue_tests.o $(OBJ_DIR)/tests/search_tests.o $(OBJ_DIR)/tests/time_tests.o $(OBJ_DIR)/tests/uci_tests.o $(OBJ_DIR)/tests/movegen_tests.o
+DEPENDENCIES := $(CORE_OBJECTS:.o=.d) $(ENGINE_OBJECTS:.o=.d) $(PERFT_OBJECT:.o=.d) $(TT_BENCH_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build release debug sanitize test test-run perft ttbench ttbench-run clean
+.PHONY: all build release debug sanitize test test-run uci perft ttbench ttbench-run clean
 
 all: release
 
-build: $(PERFT_TARGET)
+build: $(ENGINE_TARGET) $(PERFT_TARGET)
 
 release:
 	$(MAKE) CONFIG=release ARCH=$(ARCH) build
@@ -108,6 +116,9 @@ test:
 test-run: $(TEST_TARGET)
 	& '$(TEST_TARGET)'
 
+uci: $(ENGINE_TARGET)
+	& '$(ENGINE_TARGET)'
+
 perft:
 	$(MAKE) CONFIG=release ARCH=$(ARCH) build
 	& '$(BUILD_ROOT)/release-$(ARCH)/mros-perft-$(ARCH)$(EXE_EXT)' 5
@@ -122,7 +133,11 @@ $(PERFT_TARGET): $(CORE_OBJECTS) $(PERFT_OBJECT)
 	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
 	$(CXX) $^ $(LDFLAGS) -o $@
 
-$(TEST_TARGET): $(CORE_OBJECTS) $(TEST_OBJECTS)
+$(ENGINE_TARGET): $(CORE_OBJECTS) $(ENGINE_OBJECTS)
+	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
+	$(CXX) $^ $(LDFLAGS) -o $@
+
+$(TEST_TARGET): $(CORE_OBJECTS) $(UCI_OBJECT) $(TEST_OBJECTS)
 	New-Item -ItemType Directory -Force -Path '$(@D)' | Out-Null
 	$(CXX) $^ $(LDFLAGS) -o $@
 

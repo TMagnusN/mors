@@ -1,5 +1,12 @@
 # MROS `src` 架構設計（C++23）
 
+Release 建置會產生 `mros-<arch>.exe` UCI 引擎。目前支援 `uci`、
+`isready`、`ucinewgame`、`setoption name Hash`、`Clear Hash`、
+`Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
+`go nodes <n>`、`go movetime <ms>`、`wtime/btime/winc/binc/movestogo`、
+`go infinite`、`stop` 與 `quit`。搜尋在背景執行，`stop` 以 cooperative
+cancellation 結束目前 iteration 並回傳最後一個完整 depth 的結果。
+
 本目錄預計承載一個完全獨立設計與實作的現代化西洋棋引擎。UCI、引擎協調、搜尋、棋盤核心、評估與平台最佳化各自有明確邊界。
 
 ## 設計目標
@@ -37,7 +44,6 @@ src/
 |-- chess/
 |   |-- types.hpp
 |   |-- move.hpp
-|   |-- score.hpp
 |   |-- bitboard.hpp
 |   |-- bitboard.cpp
 |   |-- attacks.hpp
@@ -53,21 +59,22 @@ src/
 |   |-- fen.cpp
 |   `-- perft.hpp
 |-- search/
+|   |-- README.md
+|   |-- score.hpp
+|   |-- see.hpp
+|   |-- see.cpp
+|   |-- tt.hpp
+|   |-- tt.cpp
+|   |-- search.hpp
+|   |-- search.cpp
 |   |-- limits.hpp
 |   |-- result.hpp
-|   |-- searcher.hpp
-|   |-- searcher.cpp
-|   |-- context.hpp
 |   |-- stack.hpp
 |   |-- move_picker.hpp
 |   |-- move_picker.cpp
 |   |-- history.hpp
-|   |-- transposition_table.hpp
-|   |-- transposition_table.cpp
 |   |-- time_manager.hpp
-|   |-- time_manager.cpp
-|   |-- worker.hpp
-|   `-- worker.cpp
+|   `-- time_manager.cpp
 |-- eval/
 |   |-- evaluator.hpp
 |   |-- evaluator.cpp
@@ -133,23 +140,23 @@ support/platform primitives are available to all lower-level components.
 不要讓所有語意都退化成 `int`。第一階段至少建立：
 
 ```cpp
-namespace mros::chess {
+namespace mros {
 
-enum class Color : std::uint8_t { white, black };
-enum class PieceType : std::uint8_t { none, pawn, knight, bishop, rook, queen, king };
-enum class Square : std::uint8_t { a1, b1 /* ... */, h8, none };
+enum Color : std::uint8_t { WHITE, BLACK, COLOR_NB };
+enum PieceType : std::uint8_t { NO_PIECE_TYPE, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING };
+enum Square : std::uint8_t { A1, B1 /* ... */, H8, SQ_NONE };
 
 using Bitboard = std::uint64_t;
 using Key = std::uint64_t;
+using Value = std::int32_t;
+using Depth = std::int32_t;
 
-class Move;    // 16/32-bit packed value；提供明確的建構與查詢 API
-class Score;   // 封裝普通分數、mate 與 tablebase 邊界
-class Depth;   // 避免與 ply、selective depth 混用
+class Move; // 16-bit packed value；提供明確的建構與查詢 API
 
-} // namespace mros::chess
+} // namespace mros
 ```
 
-`Move`、`Score`、`Depth` 應是 trivial、可複製的小型值型別，並以 `static_assert` 固定大小。熱路徑的容器採固定容量，例如 `MoveList<256>`；搜尋期間不使用 `std::vector` 擴容。
+`Move` 是 trivial、可複製的小型值型別；`Value` 與 `Depth` 使用固定寬度整數，並由 `search/score.hpp` 限定 ordinary、tablebase、mate 與 sentinel 區間。熱路徑的容器採固定容量；搜尋期間不使用 `std::vector` 擴容。
 
 ## C++23 使用原則
 

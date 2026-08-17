@@ -13,9 +13,25 @@ using Key = std::uint64_t;
 using Value = std::int32_t;
 using Depth = std::int32_t;
 
-inline constexpr Value VALUE_NONE     = 32'002;
-inline constexpr Value VALUE_INFINITE = 32'001;
-inline constexpr Value VALUE_MATE     = 32'000;
+// Search values occupy disjoint ordinary, tablebase and mate bands. MAX_PLY
+// also leaves sixteen guard states in the 256-entry NNUE worker stack.
+inline constexpr int MAX_PLY = 240;
+
+inline constexpr Value VALUE_DRAW               = 0;
+inline constexpr Value VALUE_MATE               = 32'000;
+inline constexpr Value VALUE_MATE_IN_MAX_PLY    = VALUE_MATE - MAX_PLY;
+inline constexpr Value VALUE_TB                 = VALUE_MATE_IN_MAX_PLY - 1;
+inline constexpr Value VALUE_TB_WIN_IN_MAX_PLY  = VALUE_TB - MAX_PLY;
+inline constexpr Value VALUE_EVAL_MAX           = VALUE_TB_WIN_IN_MAX_PLY - 1;
+inline constexpr Value VALUE_INFINITE           = VALUE_MATE + 1;
+inline constexpr Value VALUE_NONE               = VALUE_INFINITE + 1;
+
+static_assert(VALUE_DRAW == 0);
+static_assert(VALUE_EVAL_MAX == 31'518);
+static_assert(VALUE_TB_WIN_IN_MAX_PLY == 31'519);
+static_assert(VALUE_TB == 31'759);
+static_assert(VALUE_MATE_IN_MAX_PLY == 31'760);
+static_assert(VALUE_NONE < (1 << 15));
 
 inline constexpr Depth DEPTH_QS         = 0;
 inline constexpr Depth DEPTH_UNSEARCHED = -2;
