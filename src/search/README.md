@@ -16,7 +16,9 @@ deepening depth 後停止；hard deadline 每 64 nodes 輪詢並立即傳播
 
 `search.hpp/.cpp` 已提供單執行緒 iterative-deepening PVS：第一個著法使用完整窗口，後續著法先做 null-window probe，只有改善 alpha 且尚未 fail-high 時才完整重搜。第一版同時接入 check-aware qsearch、增量 NNUE、TT probe/store、TT move ordering、mate-distance normalization、repetition、50-move、insufficient-material、PV 與 hard node limit。
 
-目前刻意不包含 history/killers、NMP/RFP、futility、LMR/LMP、singular extension 與 SMP。這些必須在固定 PVS benchmark 與正確性測試之上逐項加入。
+目前已加入 TT raw static-eval cache 與保守的 non-PV reverse futility pruning；
+仍刻意不包含 history/killers、NMP、forward futility、LMR/LMP、singular
+extension 與 SMP。這些必須在固定 PVS benchmark 與正確性測試之上逐項加入。
 
 ## 分數領域總覽
 

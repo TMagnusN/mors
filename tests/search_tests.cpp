@@ -131,6 +131,8 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
         || !expect(result.stats.aspiration_searches
                        == 2 + result.stats.aspiration_researches,
                    "each aspiration failure must cause exactly one root re-search")
+        || !expect(result.stats.static_eval_cache_hits > 0,
+                   "iterative deepening must reuse cached static evaluations")
         || !expect(position.key() == original_key && position.fen() == original_fen,
                    "search must restore the root position")) {
         return false;
@@ -145,6 +147,32 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
         pv_position.do_move(move, state);
     }
     return true;
+}
+
+bool test_reverse_futility_pruning(const nnue::Network& network) {
+    auto parsed = Position::from_fen(
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10"
+    );
+    if (!expect(parsed.has_value(), "RFP exercise FEN must parse"))
+        return false;
+
+    const std::string original_fen = parsed->fen();
+    TranspositionTable table(8);
+    const SearchResult result = search(
+        *parsed,
+        table,
+        network,
+        SearchLimits{.max_depth = 4}
+    );
+
+    return expect(result.completed_depth == 4, "RFP exercise search must complete")
+        && expect(result.stats.rfp_cutoffs > 0,
+                  "non-PV shallow nodes must exercise reverse futility pruning")
+        && expect(!result.best_move.is_none()
+                      && move_is_legal(*parsed, result.best_move),
+                  "RFP exercise must retain a legal root move")
+        && expect(parsed->fen() == original_fen,
+                  "RFP exercise must restore the root position");
 }
 
 bool test_tt_reuse(const nnue::Network& network) {
@@ -275,6 +303,7 @@ bool run_search_tests() {
 
     const bool passed = test_terminal_nodes(*loaded)
                      && test_pvs_and_restoration(*loaded)
+                     && test_reverse_futility_pruning(*loaded)
                      && test_tt_reuse(*loaded)
                      && test_node_limit(*loaded)
                      && test_cooperative_stop_and_deadline(*loaded)

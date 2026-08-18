@@ -48,6 +48,8 @@ struct SearchStats final {
     std::uint64_t aspiration_researches = 0;
     std::uint64_t tt_hits = 0;
     std::uint64_t tt_cutoffs = 0;
+    std::uint64_t static_eval_cache_hits = 0;
+    std::uint64_t rfp_cutoffs = 0;
     int seldepth = 0;
 };
 

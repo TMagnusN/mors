@@ -29,6 +29,8 @@ inline constexpr int TT_MOVE_SCORE = 1'000'000;
 inline constexpr int GOOD_NOISY_SCORE = 100'000;
 inline constexpr int BAD_NOISY_SCORE = -100'000;
 inline constexpr Value INITIAL_ASPIRATION_DELTA = 16;
+inline constexpr Depth RFP_MAX_DEPTH = 6;
+inline constexpr Value RFP_MARGIN_PER_DEPTH = 100;
 inline constexpr Bitboard ONE_SQUARE_COLOR = 0xAA55'AA55'AA55'AA55ULL;
 
 struct PvTable final {
@@ -371,6 +373,50 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
     }
 
+    Value raw_static_eval = VALUE_NONE;
+    if (!checked) {
+        if (tt_hit && is_eval_value(probe.data.static_eval)) {
+            raw_static_eval = probe.data.static_eval;
+            ++context.stats.static_eval_cache_hits;
+        } else {
+            raw_static_eval = context.evaluator.evaluate(
+                context.position,
+                context.network
+            );
+            assert(is_eval_value(raw_static_eval));
+
+            // Populate an evaluation-only entry on a true miss. Do not replace
+            // an existing searched entry merely because it predates cached
+            // static evaluations; the normal node write below will refresh it.
+            if (!probe.hit) {
+                probe.writer.write({
+                    .move = {},
+                    .value = VALUE_NONE,
+                    .static_eval = raw_static_eval,
+                    .depth = DEPTH_UNSEARCHED,
+                    .bound = BOUND_NONE,
+                    .pv = false
+                });
+            }
+        }
+
+        // Reverse futility pruning is restricted to ordinary non-PV windows.
+        // A fail-hard beta return avoids presenting the heuristic estimate as
+        // an exact score to the parent.
+        const std::int64_t rfp_margin =
+            static_cast<std::int64_t>(RFP_MARGIN_PER_DEPTH) * depth;
+        const std::int64_t rfp_threshold =
+            static_cast<std::int64_t>(beta) + rfp_margin;
+        if (!pv_node
+            && depth <= RFP_MAX_DEPTH
+            && is_eval_value(beta)
+            && rfp_threshold <= VALUE_EVAL_MAX
+            && raw_static_eval >= rfp_threshold) {
+            ++context.stats.rfp_cutoffs;
+            return beta;
+        }
+    }
+
     order_moves(context.position, moves, tt_move);
 
     Value best_value = -VALUE_INFINITE;
@@ -444,7 +490,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     probe.writer.write({
         .move = best_move,
         .value = value_to_tt(best_value, ply),
-        .static_eval = VALUE_NONE,
+        .static_eval = raw_static_eval,
         .depth = depth,
         .bound = bound,
         .pv = pv_node
