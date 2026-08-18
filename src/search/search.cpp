@@ -28,6 +28,8 @@ namespace {
 
 inline constexpr int TT_MOVE_SCORE = 1'000'000;
 inline constexpr int GOOD_NOISY_SCORE = 100'000;
+inline constexpr int KILLER_MOVE_SCORE = 80'000;
+inline constexpr int COUNTER_MOVE_SCORE = 70'000;
 inline constexpr int BAD_NOISY_SCORE = -100'000;
 inline constexpr Value INITIAL_ASPIRATION_DELTA = 16;
 inline constexpr Depth RFP_MAX_DEPTH = 6;
@@ -35,6 +37,8 @@ inline constexpr Value RFP_MARGIN_PER_DEPTH = 100;
 inline constexpr Depth LMP_MAX_DEPTH = 4;
 inline constexpr std::size_t LMP_BASE_MOVE_LIMIT = 3;
 inline constexpr int QUIET_HISTORY_MAX = 8'192;
+inline constexpr Depth LMR_MIN_DEPTH = 2;
+inline constexpr std::size_t LMR_MIN_MOVE_COUNT = 3;
 inline constexpr Value QS_SEE_MARGIN = 74;
 inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
 inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
@@ -49,6 +53,8 @@ using QuietHistory = std::array<
     std::array<std::array<std::int16_t, 64>, 64>,
     COLOR_NB
 >;
+using KillerMoves = std::array<std::array<Move, 2>, MAX_PLY>;
+using CounterMoves = std::array<std::array<Move, 64>, 64>;
 
 struct Context final {
     Context(
@@ -82,6 +88,9 @@ struct Context final {
     std::vector<Key> keys;
     std::size_t root_key_index = 0;
     QuietHistory quiet_history{};
+    KillerMoves killer_moves{};
+    CounterMoves counter_moves{};
+    std::array<Move, MAX_PLY> path_moves{};
     SearchStats stats{};
     bool stopped = false;
     std::chrono::steady_clock::time_point soft_deadline =
@@ -284,21 +293,51 @@ private:
     return checking;
 }
 
+[[nodiscard]] bool is_killer_move(
+    const Context& context,
+    Move move,
+    int ply
+) noexcept {
+    const auto& killers = context.killer_moves[static_cast<std::size_t>(ply)];
+    return killers[0] == move || killers[1] == move;
+}
+
+[[nodiscard]] bool is_counter_move(
+    const Context& context,
+    Move move,
+    int ply
+) noexcept {
+    if (ply == 0)
+        return false;
+    const Move previous =
+        context.path_moves[static_cast<std::size_t>(ply - 1)];
+    return !previous.is_none()
+        && context.counter_moves[static_cast<std::size_t>(previous.from())]
+                                [static_cast<std::size_t>(previous.to())]
+            == move;
+}
+
 [[nodiscard]] int move_order_score(
-    const Position& position,
+    const Context& context,
     Move move,
     Move tt_move,
-    const QuietHistory& quiet_history
+    int ply
 ) noexcept {
+    const Position& position = context.position;
     if (!tt_move.is_none() && move == tt_move)
         return TT_MOVE_SCORE;
 
     const bool capture = is_capture(position, move);
     const bool promotion = move.type() == PROMOTION;
     if (!capture && !promotion) {
-        return quiet_history[static_cast<std::size_t>(position.side_to_move())]
-                            [static_cast<std::size_t>(move.from())]
-                            [static_cast<std::size_t>(move.to())];
+        if (is_killer_move(context, move, ply))
+            return KILLER_MOVE_SCORE;
+        if (is_counter_move(context, move, ply))
+            return COUNTER_MOVE_SCORE;
+        return context.quiet_history[
+            static_cast<std::size_t>(position.side_to_move())
+        ][static_cast<std::size_t>(move.from())]
+         [static_cast<std::size_t>(move.to())];
     }
 
     const Piece moving_piece = position.piece_on(move.from());
@@ -324,9 +363,9 @@ private:
 }
 
 void order_moves(
-    const Position& position,
+    const Context& context,
     MoveList& moves,
-    const QuietHistory& quiet_history,
+    int ply,
     Move tt_move = {},
     std::array<int, MAX_MOVES>* ordered_scores = nullptr
 ) noexcept {
@@ -340,10 +379,10 @@ void order_moves(
         scored[index] = {
             .move = moves[index],
             .score = move_order_score(
-                position,
+                context,
                 moves[index],
                 tt_move,
-                quiet_history
+                ply
             )
         };
     }
@@ -392,6 +431,24 @@ void update_quiet_history(
         current + bonus
         - current * std::abs(bonus) / QUIET_HISTORY_MAX
     );
+}
+
+[[nodiscard]] Depth late_move_reduction(
+    Depth depth,
+    std::size_t move_count,
+    int history,
+    bool priority_quiet
+) noexcept {
+    assert(depth >= LMR_MIN_DEPTH);
+    assert(move_count >= LMR_MIN_MOVE_COUNT);
+
+    Depth reduction = 1;
+    reduction += depth >= 4 && move_count >= 5 ? 1 : 0;
+    reduction += depth >= 6 && move_count >= 8 ? 1 : 0;
+    reduction += depth >= 8 && move_count >= 12 ? 1 : 0;
+    reduction += history < 0 ? 1 : 0;
+    reduction -= history > 2'048 || priority_quiet ? 1 : 0;
+    return std::clamp(reduction, Depth{0}, depth - 1);
 }
 
 [[nodiscard]] bool contains_move(const MoveList& moves, Move move) noexcept {
@@ -540,7 +597,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
     }
 
-    order_moves(context.position, moves, context.quiet_history, tt_move);
+    order_moves(context, moves, ply, tt_move);
 
     Value best_value = -VALUE_INFINITE;
     Move best_move{};
@@ -569,6 +626,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                [static_cast<std::size_t>(move.to())]
             : 0;
 
+        bool checking = false;
+        bool checking_known = false;
+
         // Quiet history makes the depth-squared prefix meaningful. Preserve
         // tactically exceptional quiets and give successful moves more room.
         if (lmp_node
@@ -577,12 +637,36 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             && move != tt_move
             && quiet_move_count > lmp_move_limit
                 + static_cast<std::size_t>(std::max(history, 0) / 2'048)
-            && is_eval_value(best_value)
-            && !gives_check(context.position, move)) {
-            ++context.stats.lmp_prunes;
-            continue;
+            && is_eval_value(best_value)) {
+            checking = gives_check(context.position, move);
+            checking_known = true;
+            if (!checking) {
+                ++context.stats.lmp_prunes;
+                continue;
+            }
         }
 
+        Depth reduction = 0;
+        if (!checked
+            && quiet
+            && move.type() != CASTLING
+            && move != tt_move
+            && depth >= LMR_MIN_DEPTH
+            && move_count + 1 >= LMR_MIN_MOVE_COUNT) {
+            if (!checking_known)
+                checking = gives_check(context.position, move);
+            if (!checking) {
+                reduction = late_move_reduction(
+                    depth,
+                    move_count + 1,
+                    history,
+                    is_killer_move(context, move, ply)
+                        || is_counter_move(context, move, ply)
+                );
+            }
+        }
+
+        context.path_moves[static_cast<std::size_t>(ply)] = move;
         Value score = VALUE_NONE;
         {
             MoveGuard guard(context, move);
@@ -600,9 +684,11 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                     return VALUE_NONE;
                 score = -child;
             } else {
-                const Value probe_value = pvs(
+                if (reduction > 0)
+                    ++context.stats.lmr_searches;
+                Value probe_value = pvs(
                     context,
-                    depth - 1,
+                    depth - 1 - reduction,
                     -alpha - 1,
                     -alpha,
                     ply + 1,
@@ -611,6 +697,23 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                 if (probe_value == VALUE_NONE)
                     return VALUE_NONE;
                 score = -probe_value;
+
+                // A reduced fail-high is only a hint. Verify it at the full
+                // depth before allowing it to affect alpha or cut the node.
+                if (reduction > 0 && score > alpha) {
+                    ++context.stats.lmr_researches;
+                    probe_value = pvs(
+                        context,
+                        depth - 1,
+                        -alpha - 1,
+                        -alpha,
+                        ply + 1,
+                        false
+                    );
+                    if (probe_value == VALUE_NONE)
+                        return VALUE_NONE;
+                    score = -probe_value;
+                }
 
                 if (score > alpha && score < beta) {
                     ++context.stats.pvs_researches;
@@ -659,6 +762,24 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                         searched_quiets[index],
                         -bonus / 2
                     );
+                }
+
+                auto& killers = context.killer_moves[
+                    static_cast<std::size_t>(ply)
+                ];
+                if (killers[0] != move) {
+                    killers[1] = killers[0];
+                    killers[0] = move;
+                }
+                if (ply > 0) {
+                    const Move previous = context.path_moves[
+                        static_cast<std::size_t>(ply - 1)
+                    ];
+                    if (!previous.is_none()) {
+                        context.counter_moves[
+                            static_cast<std::size_t>(previous.from())
+                        ][static_cast<std::size_t>(previous.to())] = move;
+                    }
                 }
             }
             break;
@@ -723,13 +844,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     }
 
     std::array<int, MAX_MOVES> ordered_scores{};
-    order_moves(
-        context.position,
-        moves,
-        context.quiet_history,
-        {},
-        &ordered_scores
-    );
+    order_moves(context, moves, ply, {}, &ordered_scores);
     std::size_t noisy_move_count = 0;
     for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
         const Move move = moves[move_index];
@@ -771,6 +886,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             }
         }
 
+        context.path_moves[static_cast<std::size_t>(ply)] = move;
         Value score = VALUE_NONE;
         {
             MoveGuard guard(context, move);

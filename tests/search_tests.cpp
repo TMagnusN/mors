@@ -170,6 +170,10 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
                   "non-PV shallow nodes must exercise reverse futility pruning")
         && expect(result.stats.lmp_prunes > 0,
                   "non-PV shallow nodes must exercise late-move pruning")
+        && expect(result.stats.lmr_searches > 0,
+                  "late quiets must exercise reduced-depth searches")
+        && expect(result.stats.lmr_researches <= result.stats.lmr_searches,
+                  "only reduced searches may require full-depth verification")
         && expect(result.stats.qsearch_see_prunes > 0,
                   "qsearch must exercise threshold SEE pruning")
         && expect(result.stats.qsearch_lmp_prunes > 0,
