@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -31,6 +32,9 @@ inline constexpr int BAD_NOISY_SCORE = -100'000;
 inline constexpr Value INITIAL_ASPIRATION_DELTA = 16;
 inline constexpr Depth RFP_MAX_DEPTH = 6;
 inline constexpr Value RFP_MARGIN_PER_DEPTH = 100;
+inline constexpr Depth LMP_MAX_DEPTH = 4;
+inline constexpr std::size_t LMP_BASE_MOVE_LIMIT = 3;
+inline constexpr int QUIET_HISTORY_MAX = 8'192;
 inline constexpr Value QS_SEE_MARGIN = 74;
 inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
 inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
@@ -40,6 +44,11 @@ struct PvTable final {
     std::array<std::array<Move, MAX_PLY>, MAX_PLY + 1> moves{};
     std::array<std::size_t, MAX_PLY + 1> lengths{};
 };
+
+using QuietHistory = std::array<
+    std::array<std::array<std::int16_t, 64>, 64>,
+    COLOR_NB
+>;
 
 struct Context final {
     Context(
@@ -72,6 +81,7 @@ struct Context final {
     std::unique_ptr<PvTable> pv;
     std::vector<Key> keys;
     std::size_t root_key_index = 0;
+    QuietHistory quiet_history{};
     SearchStats stats{};
     bool stopped = false;
     std::chrono::steady_clock::time_point soft_deadline =
@@ -277,15 +287,19 @@ private:
 [[nodiscard]] int move_order_score(
     const Position& position,
     Move move,
-    Move tt_move
+    Move tt_move,
+    const QuietHistory& quiet_history
 ) noexcept {
     if (!tt_move.is_none() && move == tt_move)
         return TT_MOVE_SCORE;
 
     const bool capture = is_capture(position, move);
     const bool promotion = move.type() == PROMOTION;
-    if (!capture && !promotion)
-        return 0;
+    if (!capture && !promotion) {
+        return quiet_history[static_cast<std::size_t>(position.side_to_move())]
+                            [static_cast<std::size_t>(move.from())]
+                            [static_cast<std::size_t>(move.to())];
+    }
 
     const Piece moving_piece = position.piece_on(move.from());
     int victim_value = 0;
@@ -312,6 +326,7 @@ private:
 void order_moves(
     const Position& position,
     MoveList& moves,
+    const QuietHistory& quiet_history,
     Move tt_move = {},
     std::array<int, MAX_MOVES>* ordered_scores = nullptr
 ) noexcept {
@@ -324,7 +339,12 @@ void order_moves(
     for (std::size_t index = 0; index < moves.size(); ++index) {
         scored[index] = {
             .move = moves[index],
-            .score = move_order_score(position, moves[index], tt_move)
+            .score = move_order_score(
+                position,
+                moves[index],
+                tt_move,
+                quiet_history
+            )
         };
     }
     // Move lists are small. Stable insertion sort avoids allocating from the
@@ -353,6 +373,25 @@ void order_moves(
             [](const ScoredMove& item) noexcept { return item.score; }
         );
     }
+}
+
+void update_quiet_history(
+    QuietHistory& quiet_history,
+    Color side,
+    Move move,
+    int bonus
+) noexcept {
+    assert(!move.is_none());
+    bonus = std::clamp(bonus, -QUIET_HISTORY_MAX, QUIET_HISTORY_MAX);
+    std::int16_t& entry =
+        quiet_history[static_cast<std::size_t>(side)]
+                     [static_cast<std::size_t>(move.from())]
+                     [static_cast<std::size_t>(move.to())];
+    const int current = entry;
+    entry = static_cast<std::int16_t>(
+        current + bonus
+        - current * std::abs(bonus) / QUIET_HISTORY_MAX
+    );
 }
 
 [[nodiscard]] bool contains_move(const MoveList& moves, Move move) noexcept {
@@ -501,13 +540,49 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
     }
 
-    order_moves(context.position, moves, tt_move);
+    order_moves(context.position, moves, context.quiet_history, tt_move);
 
     Value best_value = -VALUE_INFINITE;
     Move best_move{};
     std::size_t move_count = 0;
+    std::size_t quiet_move_count = 0;
+    std::array<Move, MAX_MOVES> searched_quiets{};
+    std::size_t searched_quiet_count = 0;
+    const bool lmp_node = !pv_node
+                       && !checked
+                       && depth <= LMP_MAX_DEPTH
+                       && is_eval_value(alpha)
+                       && is_eval_value(beta);
+    const std::size_t lmp_move_limit = LMP_BASE_MOVE_LIMIT
+        + static_cast<std::size_t>(depth * depth);
 
     for (const Move move : moves) {
+        const bool quiet = !is_capture(context.position, move)
+                        && move.type() != PROMOTION;
+        if (quiet)
+            ++quiet_move_count;
+
+        const int history = quiet
+            ? context.quiet_history[
+                  static_cast<std::size_t>(context.position.side_to_move())
+              ][static_cast<std::size_t>(move.from())]
+               [static_cast<std::size_t>(move.to())]
+            : 0;
+
+        // Quiet history makes the depth-squared prefix meaningful. Preserve
+        // tactically exceptional quiets and give successful moves more room.
+        if (lmp_node
+            && quiet
+            && move.type() != CASTLING
+            && move != tt_move
+            && quiet_move_count > lmp_move_limit
+                + static_cast<std::size_t>(std::max(history, 0) / 2'048)
+            && is_eval_value(best_value)
+            && !gives_check(context.position, move)) {
+            ++context.stats.lmp_prunes;
+            continue;
+        }
+
         Value score = VALUE_NONE;
         {
             MoveGuard guard(context, move);
@@ -554,6 +629,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             }
         }
         ++move_count;
+        if (quiet)
+            searched_quiets[searched_quiet_count++] = move;
 
         if (score > best_value) {
             best_value = score;
@@ -563,8 +640,29 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             alpha = score;
             update_pv(context, ply, move);
         }
-        if (alpha >= beta)
+        if (alpha >= beta) {
+            if (quiet) {
+                const int bonus = std::min(2'048, 32 * depth * depth);
+                const Color side = context.position.side_to_move();
+                update_quiet_history(
+                    context.quiet_history,
+                    side,
+                    move,
+                    bonus
+                );
+                for (std::size_t index = 0;
+                     index + 1 < searched_quiet_count;
+                     ++index) {
+                    update_quiet_history(
+                        context.quiet_history,
+                        side,
+                        searched_quiets[index],
+                        -bonus / 2
+                    );
+                }
+            }
             break;
+        }
     }
 
     assert(best_value != -VALUE_INFINITE && !best_move.is_none());
@@ -625,7 +723,13 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     }
 
     std::array<int, MAX_MOVES> ordered_scores{};
-    order_moves(context.position, moves, {}, &ordered_scores);
+    order_moves(
+        context.position,
+        moves,
+        context.quiet_history,
+        {},
+        &ordered_scores
+    );
     std::size_t noisy_move_count = 0;
     for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
         const Move move = moves[move_index];
