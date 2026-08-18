@@ -31,6 +31,9 @@ inline constexpr int BAD_NOISY_SCORE = -100'000;
 inline constexpr Value INITIAL_ASPIRATION_DELTA = 16;
 inline constexpr Depth RFP_MAX_DEPTH = 6;
 inline constexpr Value RFP_MARGIN_PER_DEPTH = 100;
+inline constexpr Value QS_SEE_MARGIN = 74;
+inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
+inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
 inline constexpr Bitboard ONE_SQUARE_COLOR = 0xAA55'AA55'AA55'AA55ULL;
 
 struct PvTable final {
@@ -199,6 +202,78 @@ private:
             && position.piece_on(move.to()) != NO_PIECE);
 }
 
+[[nodiscard]] bool gives_check(const Position& position, Move move) noexcept {
+    const Color us = position.side_to_move();
+    const Square from = move.from();
+    const Square to = move.to();
+    const Piece moving_piece = position.piece_on(from);
+    assert(is_ok(moving_piece) && color_of(moving_piece) == us);
+
+    Bitboard occupied = position.pieces();
+    clear_square(occupied, from);
+    if (move.type() == EN_PASSANT)
+        clear_square(occupied, to - pawn_push(us));
+    set_square(occupied, to);
+
+    Bitboard pawns = position.pieces(us, PAWN);
+    Bitboard knights = position.pieces(us, KNIGHT);
+    Bitboard bishops = position.pieces(us, BISHOP);
+    Bitboard rooks = position.pieces(us, ROOK);
+    Bitboard queens = position.pieces(us, QUEEN);
+    Bitboard kings = position.pieces(us, KING);
+
+    const Bitboard from_bb = square_bb(from);
+    switch (type_of(moving_piece)) {
+    case PAWN:   pawns &= ~from_bb; break;
+    case KNIGHT: knights &= ~from_bb; break;
+    case BISHOP: bishops &= ~from_bb; break;
+    case ROOK:   rooks &= ~from_bb; break;
+    case QUEEN:  queens &= ~from_bb; break;
+    case KING:   kings &= ~from_bb; break;
+    default: assert(false); break;
+    }
+
+    const PieceType destination_type = move.type() == PROMOTION
+        ? move.promotion_type()
+        : type_of(moving_piece);
+    switch (destination_type) {
+    case PAWN:   set_square(pawns, to); break;
+    case KNIGHT: set_square(knights, to); break;
+    case BISHOP: set_square(bishops, to); break;
+    case ROOK:   set_square(rooks, to); break;
+    case QUEEN:  set_square(queens, to); break;
+    case KING:   set_square(kings, to); break;
+    default: assert(false); break;
+    }
+
+    if (move.type() == CASTLING) {
+        const bool king_side = file_of(to) == FILE_G;
+        const Square rook_from = relative_square(us, king_side ? H1 : A1);
+        const Square rook_to = relative_square(us, king_side ? F1 : D1);
+        clear_square(rooks, rook_from);
+        set_square(rooks, rook_to);
+        clear_square(occupied, rook_from);
+        set_square(occupied, rook_to);
+    }
+
+    const Square king = position.king_square(~us);
+    const SliderAttacks sliders = slider_attacks(king, occupied);
+    const bool checking = (pawn_attacks(~us, king) & pawns)
+        || (knight_attacks(king) & knights)
+        || (sliders.bishop & (bishops | queens))
+        || (sliders.rook & (rooks | queens))
+        || (king_attacks(king) & kings);
+
+#ifndef NDEBUG
+    Position reference = position;
+    StateInfo state;
+    reference.do_move(move, state);
+    assert(checking == in_check(reference));
+#endif
+
+    return checking;
+}
+
 [[nodiscard]] int move_order_score(
     const Position& position,
     Move move,
@@ -237,7 +312,8 @@ private:
 void order_moves(
     const Position& position,
     MoveList& moves,
-    Move tt_move = {}
+    Move tt_move = {},
+    std::array<int, MAX_MOVES>* ordered_scores = nullptr
 ) noexcept {
     struct ScoredMove final {
         Move move;
@@ -269,6 +345,14 @@ void order_moves(
         moves.begin(),
         [](const ScoredMove& item) noexcept { return item.move; }
     );
+    if (ordered_scores != nullptr) {
+        std::transform(
+            scored.begin(),
+            scored.begin() + static_cast<std::ptrdiff_t>(moves.size()),
+            ordered_scores->begin(),
+            [](const ScoredMove& item) noexcept { return item.score; }
+        );
+    }
 }
 
 [[nodiscard]] bool contains_move(const MoveList& moves, Move move) noexcept {
@@ -528,8 +612,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         return alpha;
 
     Value best_value = -VALUE_INFINITE;
+    Value stand_pat = VALUE_NONE;
     if (!checked) {
-        const Value stand_pat = context.evaluator.evaluate(
+        stand_pat = context.evaluator.evaluate(
             context.position,
             context.network
         );
@@ -539,12 +624,47 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         alpha = std::max(alpha, stand_pat);
     }
 
-    order_moves(context.position, moves);
-    for (const Move move : moves) {
+    std::array<int, MAX_MOVES> ordered_scores{};
+    order_moves(context.position, moves, {}, &ordered_scores);
+    std::size_t noisy_move_count = 0;
+    for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
+        const Move move = moves[move_index];
         if (!checked
             && !is_capture(context.position, move)
             && move.type() != PROMOTION) {
             continue;
+        }
+
+        ++noisy_move_count;
+        if (!checked) {
+            // Reckless-style qsearch LMP: after the first two ordered noisy
+            // moves, stop on the first continuation that does not give check.
+            // Checked nodes remain exhaustive because MORS does not yet have
+            // Reckless's staged evasion picker and search-stack loss state.
+            if (noisy_move_count > QS_LMP_MOVE_LIMIT
+                && !gives_check(context.position, move)) {
+                ++context.stats.qsearch_lmp_prunes;
+                break;
+            }
+
+            // Convert the score gap to a SEE policy explicitly. The gap is
+            // deliberately damped like Reckless rather than
+            // demanding that material alone bridge the full alpha gap.
+            const SeeValue see_threshold = static_cast<SeeValue>(
+                (static_cast<std::int64_t>(alpha)
+                 - static_cast<std::int64_t>(stand_pat))
+                / QS_SEE_GAP_DIVISOR
+                - QS_SEE_MARGIN
+            );
+            // Ordering already classified every noisy move with SEE >= 0.
+            // Reuse that result whenever it proves this looser threshold.
+            const bool ordered_good = ordered_scores[move_index] > 0;
+            const bool passes_see = (ordered_good && see_threshold <= 0)
+                || see_ge(context.position, move, see_threshold);
+            if (!passes_see) {
+                ++context.stats.qsearch_see_prunes;
+                continue;
+            }
         }
 
         Value score = VALUE_NONE;
