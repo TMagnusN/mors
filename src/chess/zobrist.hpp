@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -10,7 +10,7 @@
 
 #include "types.hpp"
 
-namespace mros::zobrist {
+namespace mors::zobrist {
 
 inline constexpr Key SEED = 114514ULL;
 
@@ -42,4 +42,4 @@ extern const Tables KEYS;
     return KEYS.side;
 }
 
-} // namespace mros::zobrist
+} // namespace mors::zobrist

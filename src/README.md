@@ -1,6 +1,6 @@
-# MROS `src` 架構設計（C++23）
+# MORS `src` 架構設計（C++23）
 
-Release 建置會產生 `mros-<arch>.exe` UCI 引擎。目前支援 `uci`、
+Release 建置會產生 `mors-<arch>.exe` UCI 引擎。目前支援 `uci`、
 `isready`、`ucinewgame`、`setoption name Hash`、`Clear Hash`、
 `Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
 `go nodes <n>`、`go movetime <ms>`、`wtime/btime/winc/binc/movestogo`、
@@ -140,7 +140,7 @@ support/platform primitives are available to all lower-level components.
 不要讓所有語意都退化成 `int`。第一階段至少建立：
 
 ```cpp
-namespace mros {
+namespace mors {
 
 enum Color : std::uint8_t { WHITE, BLACK, COLOR_NB };
 enum PieceType : std::uint8_t { NO_PIECE_TYPE, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING };
@@ -153,7 +153,7 @@ using Depth = std::int32_t;
 
 class Move; // 16-bit packed value；提供明確的建構與查詢 API
 
-} // namespace mros
+} // namespace mors
 ```
 
 `Move` 是 trivial、可複製的小型值型別；`Value` 與 `Depth` 使用固定寬度整數，並由 `search/score.hpp` 限定 ordinary、tablebase、mate 與 sentinel 區間。熱路徑的容器採固定容量；搜尋期間不使用 `std::vector` 擴容。
@@ -170,7 +170,7 @@ class Move; // 16-bit packed value；提供明確的建構與查詢 API
 
 ## Makefile 建置設計
 
-唯一正式建置入口是 `src/Makefile`。它依目錄列出 source group、把物件輸出至 `build/<config>/...`，最後連結成單一 `mros`（Windows 為 `mros.exe`）；不在原始碼目錄旁產生 `.o` 或相依檔。
+唯一正式建置入口是 `src/Makefile`。它依目錄列出 source group、把物件輸出至 `build/<config>/...`，最後連結成單一 `mors`（Windows 為 `mors.exe`）；不在原始碼目錄旁產生 `.o` 或相依檔。
 
 第一版目標：
 
@@ -194,6 +194,7 @@ ARCH=generic  # Magic bitboards，無 AVX2 需求
 ARCH=avx2     # 純 Dual Hyperbola Quintessence
 ARCH=hybrid   # bishop/rook 使用 Magic；queen/combined 使用 Dual HQ
 ARCH=pext     # BMI2 PEXT/PDEP，使用 16-bit 壓縮 attack tables
+ARCH=pext-avx2 # PEXT slider backend + AVX2 NNUE，適合支援兩者的現代 CPU
 ```
 
 所有組態必須使用 `-std=c++23`、自動產生 header dependencies（`-MMD -MP`），並將 warnings、最佳化、平台與 ISA flags 分開管理。AVX2/AVX-512 不設成所有檔案共用的 flags，只編譯 NNUE/runtime 的特定 translation unit 或對應 binary variant，避免通用版本意外執行不支援的指令。
@@ -201,7 +202,7 @@ ARCH=pext     # BMI2 PEXT/PDEP，使用 16-bit 壓縮 attack tables
 ## Engine 外部介面草案
 
 ```cpp
-namespace mros::engine {
+namespace mors::engine {
 
 class Engine final {
 public:
@@ -221,7 +222,7 @@ public:
     [[nodiscard]] auto perft(int depth) const -> std::uint64_t;
 };
 
-} // namespace mros::engine
+} // namespace mors::engine
 ```
 
 `SearchHandle`/callback 傳遞結構化的 iteration、info 與 best-move 事件；UCI 字串只在 `protocol/uci` 產生。這讓未來加入 GUI、library API 或測試驅動器時，不必侵入搜尋核心。
@@ -238,7 +239,7 @@ public:
 
 ## 授權與原創性
 
-MROS 的程式碼必須獨立撰寫，不複製、移植或衍生其他西洋棋引擎的原始碼。外部演算法、論文或測試資料若有採用，必須確認授權相容性並在專案文件中標示來源。
+MORS 的程式碼必須獨立撰寫，不複製、移植或衍生其他西洋棋引擎的原始碼。外部演算法、論文或測試資料若有採用，必須確認授權相容性並在專案文件中標示來源。
 
 - License：GNU Affero General Public License v3.0 or later（`AGPL-3.0-or-later`）
 - Author：Theodore Magnus Øen
@@ -247,7 +248,7 @@ MROS 的程式碼必須獨立撰寫，不複製、移植或衍生其他西洋棋
 所有新 `.hpp` 與 `.cpp` 使用以下簡短標頭，完整授權文字放在專案根目錄的 `LICENSE`：
 
 ```cpp
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 ```

@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace mros {
+namespace mors {
 
 inline constexpr std::size_t DEFAULT_TT_SIZE_MB = 16;
 
@@ -92,4 +92,4 @@ private:
     std::uint8_t generation_ = 0;
 };
 
-} // namespace mros
+} // namespace mors

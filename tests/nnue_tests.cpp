@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -14,13 +14,13 @@
 
 namespace {
 
-using namespace mros;
+using namespace mors;
 
 [[nodiscard]] std::filesystem::path network_path() {
     constexpr std::array<std::string_view, 3> CANDIDATES{
-        "../networks/mros-p2h32.nnue",
-        "networks/mros-p2h32.nnue",
-        "../../networks/mros-p2h32.nnue"
+        "../networks/mors-p2h32.nnue",
+        "networks/mors-p2h32.nnue",
+        "../../networks/mors-p2h32.nnue"
     };
     for (const std::string_view candidate : CANDIDATES) {
         std::error_code error;
@@ -76,11 +76,14 @@ bool test_golden(const nnue::Network& network) {
 }
 
 bool test_incremental_moves(const nnue::Network& network) {
-    constexpr std::array<std::string_view, 4> CASES{{
+    constexpr std::array<std::string_view, 7> CASES{{
         START_FEN,
         "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
         "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
-        "1r2k3/P7/8/8/8/8/7p/4K3 w - - 0 1"
+        "4k3/8/8/8/3Pp3/8/8/4K3 b - d3 0 1",
+        "1r2k3/P7/8/8/8/8/7p/4K3 w - - 0 1",
+        "4k3/7P/8/8/8/8/p7/4K3 b - - 0 1"
     }};
 
     bool saw_castling = false;
@@ -181,6 +184,61 @@ bool test_incremental_line(const nnue::Network& network) {
     return expect(worker.size() == 1, "worker must return to its root state");
 }
 
+bool test_lazy_incremental_line(const nnue::Network& network) {
+    constexpr std::size_t MAX_PLIES = 80;
+    auto parsed = Position::from_fen(START_FEN);
+    if (!expect(parsed.has_value(), "lazy-line FEN must parse"))
+        return false;
+
+    Position position = std::move(*parsed);
+    nnue::Worker worker;
+    std::array<Move, MAX_PLIES> played{};
+    std::array<StateInfo, MAX_PLIES> states{};
+    std::size_t ply = 0;
+
+    // Do not evaluate the root or every child: this exercises both forward
+    // lazy updates and reconstruction back from a freshly refreshed leaf.
+    while (ply < MAX_PLIES) {
+        MoveList legal;
+        generate_legal(position, legal);
+        if (legal.empty())
+            break;
+
+        const std::size_t choice = (ply * 29 + 11) % legal.size();
+        played[ply] = legal[choice];
+        worker.push(position, played[ply]);
+        position.do_move(played[ply], states[ply]);
+        ++ply;
+
+        if (ply % 7 == 0
+            && !expect(worker.evaluate(position, network)
+                           == nnue::evaluate_reference(position, network),
+                       "lazy forward accumulator must match full refresh")) {
+            return false;
+        }
+    }
+
+    if (!expect(ply >= 32, "lazy line must reach at least 32 plies")
+        || !expect(worker.evaluate(position, network)
+                       == nnue::evaluate_reference(position, network),
+                   "lazy leaf accumulator must match full refresh")) {
+        return false;
+    }
+
+    while (ply > 0) {
+        --ply;
+        position.undo_move(played[ply], states[ply]);
+        worker.pop();
+        if (ply % 5 == 0
+            && !expect(worker.evaluate(position, network)
+                           == nnue::evaluate_reference(position, network),
+                       "lazy pop accumulator must match full refresh")) {
+            return false;
+        }
+    }
+    return expect(worker.size() == 1, "lazy worker must return to its root state");
+}
+
 bool test_mirror_cache(const nnue::Network& network) {
     constexpr std::array<std::string_view, 2> FENS{
         "r3k2r/ppp2ppp/2n1b3/3pP3/1P1P1N2/2P1B2P/P4PP1/R1Q1K2R w - - 0 1",
@@ -211,10 +269,10 @@ bool test_mirror_cache(const nnue::Network& network) {
 
 bool run_nnue_tests() {
     const std::filesystem::path path = network_path();
-    if (!expect(!path.empty(), "mros-p2h32.nnue must be available"))
+    if (!expect(!path.empty(), "mors-p2h32.nnue must be available"))
         return false;
 
-    auto loaded = mros::nnue::Network::load(path);
+    auto loaded = mors::nnue::Network::load(path);
     if (!expect(loaded.has_value(), "production P2-H32 network must load")) {
         if (!loaded)
             std::cerr << "  " << loaded.error() << '\n';
@@ -223,15 +281,16 @@ bool run_nnue_tests() {
 
     const bool base = expect(loaded->valid(), "loaded network must be valid")
                    && expect(
-                            loaded->memory_bytes() == mros::nnue::P2H32::PAYLOAD_BYTES,
+                            loaded->memory_bytes() == mors::nnue::P2H32::PAYLOAD_BYTES,
                             "network payload size"
                         );
     const bool golden = base && test_golden(*loaded);
     const bool incremental = golden && test_incremental_moves(*loaded);
     const bool line = incremental && test_incremental_line(*loaded);
-    const bool passed = line && test_mirror_cache(*loaded);
+    const bool lazy = line && test_lazy_incremental_line(*loaded);
+    const bool passed = lazy && test_mirror_cache(*loaded);
 
     if (passed)
-        std::cout << "PASS nnue p2-h32 (" << mros::nnue::worker_backend() << ")\n";
+        std::cout << "PASS nnue p2-h32 (" << mors::nnue::worker_backend() << ")\n";
     return passed;
 }

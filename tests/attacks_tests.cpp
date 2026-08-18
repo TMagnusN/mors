@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -33,7 +33,7 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 bool run_attacks_tests() {
-    using namespace mros;
+    using namespace mors;
 
     initialize_attacks();
     bool passed = true;

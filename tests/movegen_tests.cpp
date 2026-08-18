@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -20,17 +20,17 @@ struct PerftCase final {
 };
 
 bool run_case(const PerftCase& test) {
-    auto parsed = mros::Position::from_fen(test.fen);
+    auto parsed = mors::Position::from_fen(test.fen);
     if (!parsed) {
         std::cerr << "FAIL " << test.name << ": " << parsed.error() << '\n';
         return false;
     }
 
-    mros::Position position = std::move(*parsed);
+    mors::Position position = std::move(*parsed);
     const std::string original = position.fen();
 
     for (int depth = 1; depth <= test.max_depth; ++depth) {
-        const std::uint64_t actual = mros::perft(position, depth);
+        const std::uint64_t actual = mors::perft(position, depth);
         const std::uint64_t expected = test.nodes[std::size_t(depth - 1)];
         if (actual != expected) {
             std::cerr << "FAIL " << test.name << " depth " << depth
@@ -47,24 +47,24 @@ bool run_case(const PerftCase& test) {
     return true;
 }
 
-bool cross_check_legal_moves(mros::Position& position, int depth) {
-    mros::MoveList actual;
-    mros::generate_legal(position, actual);
+bool cross_check_legal_moves(mors::Position& position, int depth) {
+    mors::MoveList actual;
+    mors::generate_legal(position, actual);
 
-    mros::MoveList pseudo;
-    mros::generate_pseudo_legal(position, pseudo);
+    mors::MoveList pseudo;
+    mors::generate_pseudo_legal(position, pseudo);
 
-    std::array<std::uint16_t, mros::MAX_MOVES> actual_raw{};
-    std::array<std::uint16_t, mros::MAX_MOVES> reference_raw{};
+    std::array<std::uint16_t, mors::MAX_MOVES> actual_raw{};
+    std::array<std::uint16_t, mors::MAX_MOVES> reference_raw{};
     std::size_t reference_size = 0;
 
     for (std::size_t index = 0; index < actual.size(); ++index)
         actual_raw[index] = actual[index].raw();
 
-    const mros::Color us = position.side_to_move();
-    const mros::Color them = ~us;
-    for (const mros::Move move : pseudo) {
-        mros::StateInfo state;
+    const mors::Color us = position.side_to_move();
+    const mors::Color them = ~us;
+    for (const mors::Move move : pseudo) {
+        mors::StateInfo state;
         position.do_move(move, state);
         const bool legal = !position.is_square_attacked(position.king_square(us), them);
         position.undo_move(move, state);
@@ -87,8 +87,8 @@ bool cross_check_legal_moves(mros::Position& position, int depth) {
     if (depth == 0)
         return true;
 
-    for (const mros::Move move : actual) {
-        mros::StateInfo state;
+    for (const mors::Move move : actual) {
+        mors::StateInfo state;
         position.do_move(move, state);
         const bool passed = cross_check_legal_moves(position, depth - 1);
         position.undo_move(move, state);
@@ -105,14 +105,14 @@ bool run_movegen_cross_checks() {
     };
 
     constexpr std::array<CrossCheckCase, 4> CASES = {{
-        {mros::START_FEN, 2},
+        {mors::START_FEN, 2},
         {"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10", 1},
         {"4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 2},
         {"4k3/P7/8/8/8/8/8/4K3 w - - 0 1", 1}
     }};
 
     for (const CrossCheckCase& test : CASES) {
-        auto parsed = mros::Position::from_fen(test.fen);
+        auto parsed = mors::Position::from_fen(test.fen);
         if (!parsed || !cross_check_legal_moves(*parsed, test.depth))
             return false;
     }
@@ -134,12 +134,12 @@ bool run_time_tests();
 bool run_uci_tests();
 
 int main() {
-    mros::initialize_attacks();
+    mors::initialize_attacks();
 
     constexpr std::array<PerftCase, 5> CASES = {{
         {
             "start position",
-            mros::START_FEN,
+            mors::START_FEN,
             {20, 400, 8'902, 197'281, 4'865'609},
             5
         },

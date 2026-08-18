@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mros {
+namespace mors {
 
 using SeeValue = std::int32_t;
 
@@ -40,4 +40,4 @@ inline constexpr std::array<SeeValue, PIECE_TYPE_NB> SEE_PIECE_VALUES{
     SeeValue threshold
 ) noexcept;
 
-} // namespace mros
+} // namespace mors

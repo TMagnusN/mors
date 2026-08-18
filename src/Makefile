@@ -1,4 +1,4 @@
-# MROS - a modern C++23 chess engine
+# MORS - a modern C++23 chess engine
 # Copyright (C) 2026 Theodore Magnus Øen
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -29,28 +29,31 @@ endif
 OBJ_DIR := $(BUILD_DIR)/obj/$(OBJ_VARIANT)
 
 EXE_EXT := .exe
-PERFT_TARGET := $(BUILD_DIR)/mros-perft-$(ARCH)$(EXE_EXT)
-TEST_TARGET := $(BUILD_DIR)/mros-tests-$(ARCH)$(EXE_EXT)
-TT_BENCH_TARGET := $(BUILD_DIR)/mros-ttbench-$(ARCH)$(EXE_EXT)
-ENGINE_TARGET := $(BUILD_DIR)/mros-$(ARCH)$(EXE_EXT)
+PERFT_TARGET := $(BUILD_DIR)/mors-perft-$(ARCH)$(EXE_EXT)
+TEST_TARGET := $(BUILD_DIR)/mors-tests-$(ARCH)$(EXE_EXT)
+TT_BENCH_TARGET := $(BUILD_DIR)/mors-ttbench-$(ARCH)$(EXE_EXT)
+ENGINE_TARGET := $(BUILD_DIR)/mors-$(ARCH)$(EXE_EXT)
 
 CPPFLAGS := -I.
 COMMON_FLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 
 ifeq ($(ARCH),avx2)
-    CPPFLAGS += -DMROS_DUAL_HQ
+    CPPFLAGS += -DMORS_DUAL_HQ
     ARCH_FLAGS := -mavx2
 else ifeq ($(ARCH),hybrid)
-    CPPFLAGS += -DMROS_HYBRID -DMROS_DUAL_HQ -DMROS_MAGIC
+    CPPFLAGS += -DMORS_HYBRID -DMORS_DUAL_HQ -DMORS_MAGIC
     ARCH_FLAGS := -mavx2
+else ifeq ($(ARCH),pext-avx2)
+    CPPFLAGS += -DMORS_PEXT
+    ARCH_FLAGS := -mbmi2 -mavx2
 else ifeq ($(ARCH),pext)
-    CPPFLAGS += -DMROS_PEXT
+    CPPFLAGS += -DMORS_PEXT
     ARCH_FLAGS := -mbmi2
 else ifeq ($(ARCH),generic)
-    CPPFLAGS += -DMROS_MAGIC
+    CPPFLAGS += -DMORS_MAGIC
     ARCH_FLAGS :=
 else
-    $(error Unsupported ARCH '$(ARCH)'; expected generic, avx2, hybrid or pext)
+    $(error Unsupported ARCH '$(ARCH)'; expected generic, avx2, hybrid, pext or pext-avx2)
 endif
 
 ifeq ($(CONFIG),debug)
@@ -121,7 +124,7 @@ uci: $(ENGINE_TARGET)
 
 perft:
 	$(MAKE) CONFIG=release ARCH=$(ARCH) build
-	& '$(BUILD_ROOT)/release-$(ARCH)/mros-perft-$(ARCH)$(EXE_EXT)' 5
+	& '$(BUILD_ROOT)/release-$(ARCH)/mors-perft-$(ARCH)$(EXE_EXT)' 5
 
 ttbench:
 	$(MAKE) CONFIG=release ARCH=$(ARCH) ttbench-run

@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -9,7 +9,7 @@
 #include <cassert>
 #include <cstdint>
 
-namespace mros {
+namespace mors {
 
 [[nodiscard]] constexpr bool is_valid_value(Value value) noexcept {
     return value >= -VALUE_MATE && value <= VALUE_MATE;
@@ -103,4 +103,4 @@ namespace mros {
                           : value;
 }
 
-} // namespace mros
+} // namespace mors

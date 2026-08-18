@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -12,7 +12,7 @@
 #include <span>
 #include <string>
 
-namespace mros::nnue {
+namespace mors::nnue {
 
 struct P2H32 final {
     static constexpr std::size_t COARSE_BUCKETS = 16;
@@ -87,4 +87,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mros::nnue
+} // namespace mors::nnue

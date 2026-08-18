@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -12,7 +12,7 @@
 #include <new>
 #include <utility>
 
-namespace mros::nnue {
+namespace mors::nnue {
 namespace {
 
 constexpr std::size_t ALIGNMENT = 64;
@@ -223,4 +223,4 @@ std::span<const std::int16_t> Network::output_biases() const noexcept {
     return impl_ ? impl_->output_biases.span() : std::span<const std::int16_t>{};
 }
 
-} // namespace mros::nnue
+} // namespace mors::nnue

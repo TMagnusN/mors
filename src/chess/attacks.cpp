@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,15 +11,15 @@
 #include <cstdint>
 #include <mutex>
 
-namespace mros {
+namespace mors {
 
 namespace detail {
 
-#if defined(MROS_MAGIC)
+#if defined(MORS_MAGIC)
 std::array<Bitboard, BISHOP_ATTACK_TABLE_SIZE> bishop_magic_attacks{};
 std::array<Bitboard, ROOK_ATTACK_TABLE_SIZE> rook_magic_attacks{};
 #endif
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
 std::array<std::uint16_t, BISHOP_ATTACK_TABLE_SIZE> bishop_pext_attacks{};
 std::array<std::uint16_t, ROOK_ATTACK_TABLE_SIZE> rook_pext_attacks{};
 #endif
@@ -123,7 +123,7 @@ constexpr Bitboard directional_line(Square square, int file_delta, int rank_delt
          | directional_line(square, second_file_delta, second_rank_delta);
 }
 
-#if defined(MROS_DUAL_HQ)
+#if defined(MORS_DUAL_HQ)
 
 inline constexpr auto rank_attacks_table = []() constexpr {
     std::array<std::array<std::uint8_t, 64>, FILE_NB> table{};
@@ -154,7 +154,7 @@ inline constexpr auto rank_attacks_table = []() constexpr {
 
 #endif
 
-#if defined(MROS_MAGIC)
+#if defined(MORS_MAGIC)
 
 template<std::size_t N>
 void initialize_magic_table(
@@ -191,7 +191,7 @@ void initialize_magic_backend() {
 
 #endif
 
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
 
 template<std::size_t N>
 void initialize_pext_table(
@@ -239,10 +239,10 @@ void initialize_pext_backend() {
 #endif
 
 void initialize_slider_backend() {
-#if defined(MROS_MAGIC)
+#if defined(MORS_MAGIC)
     initialize_magic_backend();
 #endif
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
     initialize_pext_backend();
 #endif
 }
@@ -259,8 +259,8 @@ void initialize_geometry() {
 
     for (int index = 0; index < SQUARE_NB; ++index) {
         const Square square = Square(index);
-        pawn_attacks_table[WHITE][index] = mros::pawn_attacks<WHITE>(square_bb(square));
-        pawn_attacks_table[BLACK][index] = mros::pawn_attacks<BLACK>(square_bb(square));
+        pawn_attacks_table[WHITE][index] = mors::pawn_attacks<WHITE>(square_bb(square));
+        pawn_attacks_table[BLACK][index] = mors::pawn_attacks<BLACK>(square_bb(square));
         knight_attacks_table[index] = leaper_attacks(square, KNIGHT_OFFSETS);
         king_attacks_table[index] = leaper_attacks(square, KING_OFFSETS);
     }
@@ -295,7 +295,7 @@ void initialize_geometry() {
 
 } // namespace
 
-#if defined(MROS_DUAL_HQ)
+#if defined(MORS_DUAL_HQ)
 
 const std::array<detail::DualHqEntry, SQUARE_NB> detail::dual_hq_entries = []() constexpr {
     std::array<detail::DualHqEntry, SQUARE_NB> entries{};
@@ -318,7 +318,7 @@ const std::array<detail::DualHqEntry, SQUARE_NB> detail::dual_hq_entries = []() 
 
 #endif
 
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
 
 const std::array<detail::PextEntry, SQUARE_NB> detail::bishop_pext_entries = []() constexpr {
     std::array<detail::PextEntry, SQUARE_NB> entries{};
@@ -416,4 +416,4 @@ Bitboard between_bb(Square first, Square second) noexcept {
     return between_table[first][second];
 }
 
-} // namespace mros
+} // namespace mors

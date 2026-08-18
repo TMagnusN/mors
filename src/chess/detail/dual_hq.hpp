@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,7 +11,7 @@
 #include <immintrin.h>
 #include <utility>
 
-namespace mros::detail {
+namespace mors::detail {
 
 struct alignas(32) DualHqEntry final {
     // Four AVX2 lanes: file, diagonal, unused, antidiagonal.
@@ -74,4 +74,4 @@ static_assert(sizeof(DualHqEntry) % 32 == 0);
 
 extern const std::array<DualHqEntry, SQUARE_NB> dual_hq_entries;
 
-} // namespace mros::detail
+} // namespace mors::detail

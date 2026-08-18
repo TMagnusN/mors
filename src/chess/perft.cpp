@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -7,7 +7,7 @@
 #include <cassert>
 #include <string>
 
-namespace mros {
+namespace mors {
 
 std::uint64_t perft(Position& position, int depth) noexcept {
     assert(depth >= 0 && position.is_consistent());
@@ -67,4 +67,4 @@ std::string move_to_uci(Move move) {
     return result;
 }
 
-} // namespace mros
+} // namespace mors

@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -19,7 +19,7 @@
 #include <immintrin.h>
 #endif
 
-namespace mros::nnue {
+namespace mors::nnue {
 namespace {
 
 using Accumulator = std::array<std::int16_t, P2H32::WIDTH>;
@@ -609,8 +609,18 @@ void apply_incremental(
 #endif
     output /= P2H32::QA;
     output += network.output_biases()[bucket];
-    output *= network.scale();
-    output /= static_cast<std::int64_t>(P2H32::QA) * P2H32::QB;
+    const std::int64_t scale = network.scale();
+    const std::int64_t denominator = static_cast<std::int64_t>(P2H32::QA) * P2H32::QB;
+    const std::int64_t clamp_product =
+        static_cast<std::int64_t>(VALUE_EVAL_MAX) * denominator;
+    const std::int64_t safe_magnitude = clamp_product / scale;
+    if (output > safe_magnitude)
+        return VALUE_EVAL_MAX;
+    if (output < -safe_magnitude)
+        return -VALUE_EVAL_MAX;
+
+    output *= scale;
+    output /= denominator;
     return static_cast<Value>(std::clamp<std::int64_t>(
         output,
         -static_cast<std::int64_t>(VALUE_EVAL_MAX),
@@ -688,11 +698,14 @@ struct Worker::Impl final {
     > cache{};
     std::size_t state_count = 1;
     const Network* network = nullptr;
+    const std::int16_t* network_weights = nullptr;
 
     void bind(const Network& current) noexcept {
-        if (network == &current)
+        const std::int16_t* const current_weights = current.coarse_weights().data();
+        if (network == &current && network_weights == current_weights)
             return;
         network = &current;
+        network_weights = current_weights;
         for (std::size_t index = 0; index < state_count; ++index)
             states[index].computed_mask = 0;
         for (auto& side : cache)
@@ -901,4 +914,4 @@ const char* worker_backend() noexcept {
 #endif
 }
 
-} // namespace mros::nnue
+} // namespace mors::nnue

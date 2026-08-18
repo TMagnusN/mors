@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,7 +11,7 @@
 #include <string>
 #include <system_error>
 
-namespace mros {
+namespace mors {
 namespace {
 
 Piece piece_from_char(char value) noexcept {
@@ -510,4 +510,4 @@ void Position::clear_castling_right(CastlingRights right) noexcept {
     );
 }
 
-} // namespace mros
+} // namespace mors

@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <immintrin.h>
 
-namespace mros::detail {
+namespace mors::detail {
 
 struct PextEntry final {
     Bitboard occupancy_mask = 0;
@@ -30,4 +30,4 @@ extern const std::array<PextEntry, SQUARE_NB> rook_pext_entries;
 extern std::array<std::uint16_t, BISHOP_ATTACK_TABLE_SIZE> bishop_pext_attacks;
 extern std::array<std::uint16_t, ROOK_ATTACK_TABLE_SIZE> rook_pext_attacks;
 
-} // namespace mros::detail
+} // namespace mors::detail

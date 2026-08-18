@@ -1,4 +1,4 @@
-# MROS Search 數值與 TT 契約
+# MORS Search 數值與 TT 契約
 
 本文件先固定 Search 使用的數值語意，再開始實作 `search.hpp/.cpp`。目標是讓 NNUE、PVS、qsearch、SEE、move ordering 與 Transposition Table（TT）共用清楚的契約，而不是把所有整數都當成同一種「分數」。
 
@@ -42,11 +42,11 @@ deepening depth 後停止；hard deadline 每 64 nodes 輪詢並立即傳播
 
 NNUE raw output、corrected static evaluation、PVS 回傳值與 root move 的 search score 都遵守此視角。任何白方固定視角的值都必須在進入 Search 前轉換。
 
-MROS 第一版約定普通 `Value` 的一個單位約等於一 centipawn，pawn 約為 100。這是引擎內部與 UCI 顯示的尺度約定，不是勝率的數學保證；日後可以在 protocol/WDL 層校準，但不可偷偷改變 Search 內部的符號或 mate 區間。
+MORS 第一版約定普通 `Value` 的一個單位約等於一 centipawn，pawn 約為 100。這是引擎內部與 UCI 顯示的尺度約定，不是勝率的數學保證；日後可以在 protocol/WDL 層校準，但不可偷偷改變 Search 內部的符號或 mate 區間。
 
 ## `Value` 數值格線
 
-MROS 採用 Reckless 式的 decisive/TB 預留概念，但依自己的容量建立常數：
+MORS 採用 Reckless 式的 decisive/TB 預留概念，但依自己的容量建立常數：
 
 ```cpp
 inline constexpr int MAX_PLY = 240;
@@ -90,7 +90,9 @@ is_loss(v)          // v <= -VALUE_TB_WIN_IN_MAX_PLY
 - TT 中尚未 `value_from_tt()` 的 decisive value 可能因 ply normalization 落入另一個表面區段，不可先拿它判斷 mate/TB 類型。
 - 普通評估即使極端，也必須 clamp 在 `[-VALUE_EVAL_MAX, VALUE_EVAL_MAX]`。
 
-目前 `nnue::Worker` clamp 到 `[-32'000, 32'000]`，會製造假的 mate score。Search 實作前必須改成 ordinary-evaluation 邊界。實際網路輸出通常遠小於 31518，但邊界仍是必要防線。
+`nnue::Worker` 會 clamp 到 ordinary-evaluation 邊界
+`[-VALUE_EVAL_MAX, VALUE_EVAL_MAX]`（目前為 `[-31'518, 31'518]`），避免極端
+網路輸出落入 tablebase 或 mate score 區間。
 
 ## Raw static evaluation 與 corrected evaluation
 
@@ -112,7 +114,7 @@ corrected_eval = clamp_eval(raw_static_eval + scaled_correction)
 
 在 check 中沒有合法的 stand-pat 靜態局面。第一版可以令 `static_eval == VALUE_NONE`，或只為其他用途計算，但 qsearch 絕不能在 check node 用它直接 cutoff。
 
-和棋規則第一版固定回傳零。Reckless 以少量 node-dependent jitter 避免重複循環是可測的 heuristic，但 MROS 第一版不採用：TT、repetition 與測試先保持真正的 `draw == 0`。未來若加入 contempt，也只能在 root/presentation policy 明確施加。
+和棋規則第一版固定回傳零。Reckless 以少量 node-dependent jitter 避免重複循環是可測的 heuristic，但 MORS 第一版不採用：TT、repetition 與測試先保持真正的 `draw == 0`。未來若加入 contempt，也只能在 root/presentation policy 明確施加。
 
 ## `Value` 的證據等級
 
@@ -178,13 +180,13 @@ Mate/decisive score 含有相對 root 的 ply。同一 position 可從不同路�
 }
 ```
 
-這裡使用 decisive threshold，而不只 mate threshold，讓未來 tablebase distance values 也有一致的路徑語意。Hobbes 的檔案切分值得參考，但 TT 轉換的正負方向不能按函式名照搬，必須以 MROS 的「store 加 root ply、probe 減目前 ply」round-trip 測試決定。
+這裡使用 decisive threshold，而不只 mate threshold，讓未來 tablebase distance values 也有一致的路徑語意。Hobbes 的檔案切分值得參考，但 TT 轉換的正負方向不能按函式名照搬，必須以 MORS 的「store 加 root ply、probe 減目前 ply」round-trip 測試決定。
 
 ### 50-move 與 decisive TT score
 
 Zobrist position key 通常不包含 halfmove clock，因此相同棋盤可能在不同剩餘 50-move 距離 probe 到同一筆 decisive score。Reckless 在 TT decode 時會檢查 stored mate/TB distance 是否超過剩餘 reversible plies。
 
-MROS 第一版至少要採以下其中一種安全策略：
+MORS 第一版至少要採以下其中一種安全策略：
 
 1. `value_from_tt()` 同時取得 halfmove clock，將不再可靠的 decisive score 降到 ordinary 邊界；或
 2. 拒絕該 score 作 cutoff，但仍使用 TT move 與 raw eval。
@@ -317,7 +319,7 @@ threshold 語意：
 
 `SeeValue` 採 pawn=100 只是讓 threshold 直觀；它不等於 NNUE `Value`。禁止把 SEE 結果加到 static eval、寫入 TT，或直接當 PVS 回傳值。
 
-Hobbes 為 ordering 與 pruning 各自調了一套 SEE piece values；Reckless 則使用單一 tuned material table。MROS 第一版選擇單表：先減少自由度並把合法性做好，只有 self-play/tuning 證明雙表有效時才拆成 `SeeType::Ordering/Pruning`。
+Hobbes 為 ordering 與 pruning 各自調了一套 SEE piece values；Reckless 則使用單一 tuned material table。MORS 第一版選擇單表：先減少自由度並把合法性做好，只有 self-play/tuning 證明雙表有效時才拆成 `SeeType::Ordering/Pruning`。
 
 ## Move ordering score
 
@@ -341,7 +343,7 @@ Root move 的 `score`、`previous_score`、`average_score` 是真正的 Search `
 
 ## History 與 correction score
 
-`HistoryScore` 是有界、無單位的學習統計。Reckless 與 Hobbes 都使用 gravity 類更新，MROS 契約為：
+`HistoryScore` 是有界、無單位的學習統計。Reckless 與 Hobbes 都使用 gravity 類更新，MORS 契約為：
 
 ```text
 next = current + bonus - current * abs(bonus) / limit
@@ -552,7 +554,7 @@ search.cpp private Context
 - SEE ordering/pruning 可各自 tuning，但不是第一版必要複雜度。
 - `MAX_PLY + guard` 的 stack 配置與清楚的 protocol formatting 邊界。
 
-只學習演算法與不變量，不複製兩者程式碼或參數。它們的 tuned piece values、history weights、pruning margins 都不適合直接成為 MROS 常數。
+只學習演算法與不變量，不複製兩者程式碼或參數。它們的 tuned piece values、history weights、pruning margins 都不適合直接成為 MORS 常數。
 
 ## 實作順序與必測不變量
 

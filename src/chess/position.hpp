@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -13,7 +13,7 @@
 #include "attacks.hpp"
 #include "move.hpp"
 
-namespace mros {
+namespace mors {
 
 inline constexpr std::string_view START_FEN =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -93,4 +93,4 @@ private:
     std::uint16_t fullmove_number_ = 1;
 };
 
-} // namespace mros
+} // namespace mors

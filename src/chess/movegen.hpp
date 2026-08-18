@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -7,7 +7,7 @@
 #include "move_list.hpp"
 #include "position.hpp"
 
-namespace mros {
+namespace mors {
 
 // Generates moves that obey piece movement rules. Castling path safety is
 // checked here; king safety for all other moves is checked by generate_legal.
@@ -17,4 +17,4 @@ void generate_pseudo_legal(const Position& position, MoveList& moves) noexcept;
 // en-passant edge case uses make/unmake as a final king-safety oracle.
 void generate_legal(Position& position, MoveList& moves) noexcept;
 
-} // namespace mros
+} // namespace mors

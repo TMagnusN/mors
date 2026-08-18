@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -32,19 +32,59 @@
 #include <utility>
 #include <vector>
 
-namespace mros {
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+namespace mors {
 namespace {
 
+[[nodiscard]] std::filesystem::path executable_directory() {
+#if defined(_WIN32)
+    // Windows long paths are limited to 32,767 UTF-16 code units.
+    std::array<wchar_t, 32'768> buffer{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr,
+        buffer.data(),
+        static_cast<DWORD>(buffer.size())
+    );
+    if (length == 0 || length >= buffer.size())
+        return {};
+    return std::filesystem::path(
+        std::wstring(buffer.data(), static_cast<std::size_t>(length))
+    ).parent_path();
+#elif defined(__linux__)
+    std::error_code error;
+    const std::filesystem::path executable =
+        std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::filesystem::path{} : executable.parent_path();
+#else
+    return {};
+#endif
+}
+
 [[nodiscard]] std::filesystem::path find_default_network() {
-    constexpr std::array<std::string_view, 3> CANDIDATES{
-        "networks/mros-p2h32.nnue",
-        "../networks/mros-p2h32.nnue",
-        "../../networks/mros-p2h32.nnue"
+    const std::filesystem::path directory = executable_directory();
+    const std::filesystem::path filename = "mors-p2h32.nnue";
+    const std::array<std::filesystem::path, 7> candidates{
+        directory / filename,
+        directory / "networks" / filename,
+        directory / ".." / "networks" / filename,
+        directory / ".." / ".." / "networks" / filename,
+        std::filesystem::path("networks") / filename,
+        std::filesystem::path("../networks") / filename,
+        std::filesystem::path("../../networks") / filename
     };
-    for (const std::string_view candidate : CANDIDATES) {
+    for (const std::filesystem::path& candidate : candidates) {
         std::error_code error;
         if (std::filesystem::is_regular_file(candidate, error) && !error)
-            return std::filesystem::path(candidate);
+            return candidate;
     }
     return {};
 }
@@ -179,7 +219,7 @@ public:
 
         if (command == "uci") {
             std::ostringstream response;
-            response << "id name MROS\n"
+            response << "id name MORS\n"
                      << "id author Theodore Magnus Øen\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
@@ -540,7 +580,7 @@ int run_uci(std::istream& input, std::ostream& output) {
 
     const std::filesystem::path path = find_default_network();
     if (path.empty()) {
-        output << "info string NNUE network not found: mros-p2h32.nnue\n";
+        output << "info string NNUE network not found: mors-p2h32.nnue\n";
         return 1;
     }
 
@@ -566,4 +606,4 @@ int run_uci() {
     return run_uci(std::cin, std::cout);
 }
 
-} // namespace mros
+} // namespace mors

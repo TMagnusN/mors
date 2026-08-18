@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -9,24 +9,24 @@
 #include <array>
 #include <cassert>
 
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
 #include "detail/pext.hpp"
 #endif
-#if defined(MROS_DUAL_HQ)
+#if defined(MORS_DUAL_HQ)
 #include "detail/dual_hq.hpp"
 #endif
-#if defined(MROS_MAGIC)
+#if defined(MORS_MAGIC)
 #include "detail/generated_magics.hpp"
 #endif
 
-#if defined(MROS_HYBRID) && (!defined(MROS_DUAL_HQ) || !defined(MROS_MAGIC))
-#error "MROS_HYBRID requires both MROS_DUAL_HQ and MROS_MAGIC"
+#if defined(MORS_HYBRID) && (!defined(MORS_DUAL_HQ) || !defined(MORS_MAGIC))
+#error "MORS_HYBRID requires both MORS_DUAL_HQ and MORS_MAGIC"
 #endif
-#if defined(MROS_PEXT) && (defined(MROS_DUAL_HQ) || defined(MROS_MAGIC))
-#error "MROS_PEXT is a standalone slider backend"
+#if defined(MORS_PEXT) && (defined(MORS_DUAL_HQ) || defined(MORS_MAGIC))
+#error "MORS_PEXT is a standalone slider backend"
 #endif
 
-namespace mros {
+namespace mors {
 
 struct SliderAttacks final {
     Bitboard bishop;
@@ -43,7 +43,7 @@ namespace detail {
 
 [[nodiscard]] bool attacks_ready() noexcept;
 
-#if defined(MROS_MAGIC)
+#if defined(MORS_MAGIC)
 
 extern std::array<Bitboard, BISHOP_ATTACK_TABLE_SIZE> bishop_magic_attacks;
 extern std::array<Bitboard, ROOK_ATTACK_TABLE_SIZE> rook_magic_attacks;
@@ -77,7 +77,7 @@ template<PieceType Type>
     static_assert(Type == BISHOP || Type == ROOK || Type == QUEEN);
     assert(detail::attacks_ready() && is_ok(square));
 
-#if defined(MROS_PEXT)
+#if defined(MORS_PEXT)
     if constexpr (Type == BISHOP)
         return detail::bishop_pext_entries[square].lookup(occupied);
     else if constexpr (Type == ROOK)
@@ -85,7 +85,7 @@ template<PieceType Type>
     else
         return detail::bishop_pext_entries[square].lookup(occupied)
              | detail::rook_pext_entries[square].lookup(occupied);
-#elif defined(MROS_HYBRID)
+#elif defined(MORS_HYBRID)
     if constexpr (Type == BISHOP)
         return detail::magic_attacks<BISHOP>(square, occupied);
     else if constexpr (Type == ROOK)
@@ -94,7 +94,7 @@ template<PieceType Type>
         const auto [bishop, rook] = detail::dual_hq_entries[square].attacks(occupied);
         return bishop | rook;
     }
-#elif defined(MROS_DUAL_HQ)
+#elif defined(MORS_DUAL_HQ)
     const auto [bishop, rook] = detail::dual_hq_entries[square].attacks(occupied);
     if constexpr (Type == BISHOP)
         return bishop;
@@ -102,7 +102,7 @@ template<PieceType Type>
         return rook;
     else
         return bishop | rook;
-#elif defined(MROS_MAGIC)
+#elif defined(MORS_MAGIC)
     if constexpr (Type == BISHOP) {
         return detail::magic_attacks<BISHOP>(square, occupied);
     } else if constexpr (Type == ROOK) {
@@ -112,7 +112,7 @@ template<PieceType Type>
              | sliding_attacks<ROOK>(square, occupied);
     }
 #else
-#error "Select MROS_PEXT, MROS_DUAL_HQ or MROS_MAGIC"
+#error "Select MORS_PEXT, MORS_DUAL_HQ or MORS_MAGIC"
 #endif
 }
 
@@ -126,7 +126,7 @@ template<PieceType Type>
 
 [[nodiscard]] inline SliderAttacks slider_attacks(Square square, Bitboard occupied) noexcept {
     assert(detail::attacks_ready() && is_ok(square));
-#if defined(MROS_DUAL_HQ)
+#if defined(MORS_DUAL_HQ)
     const auto [bishop, rook] = detail::dual_hq_entries[square].attacks(occupied);
     return {bishop, rook};
 #else
@@ -166,4 +166,4 @@ namespace detail {
 
 } // namespace detail
 
-} // namespace mros
+} // namespace mors

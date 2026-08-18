@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -13,26 +13,26 @@
 
 namespace {
 
-bool verify_incremental_keys(std::string_view fen, mros::MoveType required_type) {
-    auto parsed = mros::Position::from_fen(fen);
+bool verify_incremental_keys(std::string_view fen, mors::MoveType required_type) {
+    auto parsed = mors::Position::from_fen(fen);
     if (!parsed) {
         std::cerr << "FAIL zobrist: invalid test FEN: " << parsed.error() << '\n';
         return false;
     }
 
-    mros::Position position = std::move(*parsed);
-    const mros::Key original_key = position.key();
+    mors::Position position = std::move(*parsed);
+    const mors::Key original_key = position.key();
     const std::string original_fen = position.fen();
-    mros::MoveList moves;
-    mros::generate_legal(position, moves);
+    mors::MoveList moves;
+    mors::generate_legal(position, moves);
 
     bool found_required_type = false;
-    for (const mros::Move move : moves) {
+    for (const mors::Move move : moves) {
         found_required_type |= move.type() == required_type;
-        mros::StateInfo state;
+        mors::StateInfo state;
         position.do_move(move, state);
 
-        auto rebuilt = mros::Position::from_fen(position.fen());
+        auto rebuilt = mors::Position::from_fen(position.fen());
         if (!rebuilt || rebuilt->key() != position.key()) {
             std::cerr << "FAIL zobrist: incremental key differs from full rebuild\n";
             return false;
@@ -55,7 +55,7 @@ bool verify_incremental_keys(std::string_view fen, mros::MoveType required_type)
 } // namespace
 
 bool run_zobrist_tests() {
-    using namespace mros;
+    using namespace mors;
     static_assert(zobrist::SEED == Key{114514});
 
     constexpr std::array<std::pair<std::string_view, MoveType>, 4> CASES = {{

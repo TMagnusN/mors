@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace mros {
+namespace mors {
 namespace {
 
 inline constexpr std::size_t ENTRIES_PER_CLUSTER = 3;
@@ -241,7 +241,7 @@ std::size_t TranspositionTable::index(Key key) const noexcept {
         (static_cast<UInt128>(index_key) * cluster_count_) >> 48
     );
 #else
-#error "MROS TT requires a compiler with unsigned 128-bit integer support"
+#error "MORS TT requires a compiler with unsigned 128-bit integer support"
 #endif
 }
 
@@ -335,4 +335,4 @@ std::size_t TranspositionTable::size_bytes() const noexcept {
     return cluster_count_ * sizeof(detail::TTCluster);
 }
 
-} // namespace mros
+} // namespace mors

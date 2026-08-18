@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -6,7 +6,7 @@
 
 #include <cstddef>
 
-namespace mros::zobrist {
+namespace mors::zobrist {
 namespace {
 
 class XorShift64Star final {
@@ -51,4 +51,4 @@ private:
 
 constinit const Tables KEYS = make_tables();
 
-} // namespace mros::zobrist
+} // namespace mors::zobrist

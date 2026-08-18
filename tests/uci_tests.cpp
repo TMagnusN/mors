@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -71,14 +71,14 @@ bool run_uci_tests() {
         "quit\n"
     };
     std::ostringstream output;
-    if (mros::run_uci(input, output) != 0) {
+    if (mors::run_uci(input, output) != 0) {
         std::cerr << "FAIL UCI: command loop must exit successfully\n";
         return false;
     }
 
     const std::string text = output.str();
     const bool passed =
-           expect_contains(text, "id name MROS\n", "engine id must be emitted")
+           expect_contains(text, "id name MORS\n", "engine id must be emitted")
         && expect_contains(text, "id author Theodore Magnus Øen\n",
                            "author id must be emitted")
         && expect_contains(text, "uciok\n", "uci handshake must complete")

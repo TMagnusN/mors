@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -17,13 +17,13 @@
 
 namespace {
 
-using namespace mros;
+using namespace mors;
 
 [[nodiscard]] std::filesystem::path network_path() {
     constexpr std::array<std::string_view, 3> CANDIDATES{
-        "../networks/mros-p2h32.nnue",
-        "networks/mros-p2h32.nnue",
-        "../../networks/mros-p2h32.nnue"
+        "../networks/mors-p2h32.nnue",
+        "networks/mors-p2h32.nnue",
+        "../../networks/mors-p2h32.nnue"
     };
     for (const std::string_view candidate : CANDIDATES) {
         std::error_code error;
@@ -263,10 +263,10 @@ bool test_draw_rules(const nnue::Network& network) {
 
 bool run_search_tests() {
     const std::filesystem::path path = network_path();
-    if (!expect(!path.empty(), "mros-p2h32.nnue must be available"))
+    if (!expect(!path.empty(), "mors-p2h32.nnue must be available"))
         return false;
 
-    auto loaded = mros::nnue::Network::load(path);
+    auto loaded = mors::nnue::Network::load(path);
     if (!expect(loaded.has_value(), "search network must load")) {
         if (!loaded)
             std::cerr << "  " << loaded.error() << '\n';

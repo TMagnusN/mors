@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -14,7 +14,7 @@
 #include <limits>
 #include <span>
 
-namespace mros {
+namespace mors {
 
 class Position;
 class TranspositionTable;
@@ -72,4 +72,4 @@ struct SearchResult final {
     const SearchLimits& limits = {}
 );
 
-} // namespace mros
+} // namespace mors

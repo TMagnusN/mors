@@ -1,4 +1,4 @@
-// MROS - a modern C++23 chess engine
+// MORS - a modern C++23 chess engine
 // Copyright (C) 2026 Theodore Magnus Øen
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -33,8 +33,8 @@ private:
 
 void run_probe_benchmark(
     std::string_view label,
-    mros::TranspositionTable& table,
-    const std::vector<mros::Key>& keys,
+    mors::TranspositionTable& table,
+    const std::vector<mors::Key>& keys,
     std::size_t iterations
 ) {
     std::uint64_t checksum = 0;
@@ -43,7 +43,7 @@ void run_probe_benchmark(
 
     const auto begin = Clock::now();
     for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
-        const mros::TTProbe probe = table.probe(keys[iteration & mask]);
+        const mors::TTProbe probe = table.probe(keys[iteration & mask]);
         hits += probe.hit;
         checksum += static_cast<std::uint64_t>(probe.data.move.raw())
                   + static_cast<std::uint64_t>(probe.data.depth + 3);
@@ -68,20 +68,20 @@ int main() {
     constexpr std::size_t KEY_COUNT = 1U << 18;
     constexpr std::size_t ITERATIONS = 1U << 24;
 
-    mros::TranspositionTable table(16);
-    std::vector<mros::Key> hit_keys(KEY_COUNT);
-    std::vector<mros::Key> miss_keys(KEY_COUNT);
+    mors::TranspositionTable table(16);
+    std::vector<mors::Key> hit_keys(KEY_COUNT);
+    std::vector<mors::Key> miss_keys(KEY_COUNT);
     SplitMix64 random(114514);
 
     for (std::size_t index = 0; index < KEY_COUNT; ++index) {
         hit_keys[index] = random.next();
-        const mros::TTProbe probe = table.probe(hit_keys[index]);
+        const mors::TTProbe probe = table.probe(hit_keys[index]);
         probe.writer.write({
-            .move = mros::Move::normal(mros::B1, mros::C3),
-            .value = static_cast<mros::Value>(index & 1023U),
-            .static_eval = static_cast<mros::Value>(index & 511U),
-            .depth = static_cast<mros::Depth>(1 + (index & 63U)),
-            .bound = mros::BOUND_LOWER,
+            .move = mors::Move::normal(mors::B1, mors::C3),
+            .value = static_cast<mors::Value>(index & 1023U),
+            .static_eval = static_cast<mors::Value>(index & 511U),
+            .depth = static_cast<mors::Depth>(1 + (index & 63U)),
+            .bound = mors::BOUND_LOWER,
             .pv = (index & 7U) == 0
         });
         miss_keys[index] = random.next();
