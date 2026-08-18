@@ -70,6 +70,8 @@ public:
 
     void do_move(Move move, StateInfo& state) noexcept;
     void undo_move(Move move, const StateInfo& state) noexcept;
+    void do_null_move(StateInfo& state) noexcept;
+    void undo_null_move(const StateInfo& state) noexcept;
 
     [[nodiscard]] bool is_consistent() const noexcept;
 

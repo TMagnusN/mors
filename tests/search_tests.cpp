@@ -4,6 +4,7 @@
 
 #include "chess/movegen.hpp"
 #include "eval/nnue/network.hpp"
+#include "eval/nnue/worker.hpp"
 #include "search/score.hpp"
 #include "search/search.hpp"
 #include "search/tt.hpp"
@@ -45,6 +46,40 @@ bool expect(bool condition, const char* message) {
     for (const Move candidate : legal)
         if (candidate == move) return true;
     return false;
+}
+
+bool test_null_move_round_trip(const nnue::Network& network) {
+    auto parsed = Position::from_fen(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+    );
+    if (!expect(parsed.has_value(), "null-move FEN must parse"))
+        return false;
+
+    const std::string original_fen = parsed->fen();
+    const Key original_key = parsed->key();
+    nnue::Worker worker;
+    const Value original_eval = worker.evaluate(*parsed, network);
+
+    StateInfo state;
+    parsed->do_null_move(state);
+    const bool null_ok = expect(parsed->side_to_move() == WHITE,
+                                "null move must toggle side")
+        && expect(parsed->ep_square() == SQ_NONE,
+                  "null move must clear en-passant")
+        && expect(parsed->key() != original_key,
+                  "null move must change the position key")
+        && expect(parsed->is_consistent(),
+                  "null position must remain internally consistent")
+        && expect(worker.evaluate(*parsed, network)
+                      == nnue::evaluate_reference(*parsed, network),
+                  "NNUE accumulator must remain valid across a null move");
+
+    parsed->undo_null_move(state);
+    return null_ok
+        && expect(parsed->fen() == original_fen && parsed->key() == original_key,
+                  "undo null must restore the exact position")
+        && expect(worker.evaluate(*parsed, network) == original_eval,
+                  "undo null must preserve the NNUE accumulator");
 }
 
 bool test_terminal_nodes(const nnue::Network& network) {
@@ -174,6 +209,10 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
                   "late quiets must exercise reduced-depth searches")
         && expect(result.stats.lmr_researches <= result.stats.lmr_searches,
                   "only reduced searches may require full-depth verification")
+        && expect(result.stats.nmp_searches > 0,
+                  "non-PV eval fail-highs must exercise null-move probes")
+        && expect(result.stats.nmp_cutoffs <= result.stats.nmp_searches,
+                  "NMP cutoffs must come from null-move probes")
         && expect(result.stats.qsearch_see_prunes > 0,
                   "qsearch must exercise threshold SEE pruning")
         && expect(result.stats.qsearch_lmp_prunes > 0,
@@ -297,6 +336,29 @@ bool test_draw_rules(const nnue::Network& network) {
                   "a drawable root with legal moves still needs a best move");
 }
 
+bool test_null_move_material_gate(const nnue::Network& network) {
+    auto parsed = Position::from_fen(
+        "8/8/8/3k4/3P4/3K4/8/8 w - - 0 1"
+    );
+    if (!expect(parsed.has_value(), "pawn-ending FEN must parse"))
+        return false;
+
+    const std::string original_fen = parsed->fen();
+    TranspositionTable table(2);
+    const SearchResult result = search(
+        *parsed,
+        table,
+        network,
+        SearchLimits{.max_depth = 5}
+    );
+    return expect(result.completed_depth == 5,
+                  "pawn-ending search must complete")
+        && expect(result.stats.nmp_searches == 0,
+                  "NMP must stay disabled without non-pawn material")
+        && expect(parsed->fen() == original_fen,
+                  "pawn-ending search must restore the root position");
+}
+
 } // namespace
 
 bool run_search_tests() {
@@ -311,13 +373,15 @@ bool run_search_tests() {
         return false;
     }
 
-    const bool passed = test_terminal_nodes(*loaded)
+    const bool passed = test_null_move_round_trip(*loaded)
+                     && test_terminal_nodes(*loaded)
                      && test_pvs_and_restoration(*loaded)
                      && test_reverse_futility_pruning(*loaded)
                      && test_tt_reuse(*loaded)
                      && test_node_limit(*loaded)
                      && test_cooperative_stop_and_deadline(*loaded)
-                     && test_draw_rules(*loaded);
+                     && test_draw_rules(*loaded)
+                     && test_null_move_material_gate(*loaded);
     if (passed)
         std::cout << "PASS iterative PVS search\n";
     return passed;

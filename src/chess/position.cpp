@@ -420,6 +420,38 @@ void Position::undo_move(Move move, const StateInfo& state) noexcept {
     assert(is_consistent());
 }
 
+void Position::do_null_move(StateInfo& state) noexcept {
+    assert(is_consistent());
+    state.castling_rights = castling_rights_;
+    state.key = key_;
+    state.ep_square = ep_square_;
+    state.halfmove_clock = halfmove_clock_;
+    state.fullmove_number = fullmove_number_;
+    state.captured_piece = NO_PIECE;
+    state.captured_square = SQ_NONE;
+
+    if (ep_square_ != SQ_NONE)
+        key_ ^= zobrist::en_passant(file_of(ep_square_));
+    ep_square_ = SQ_NONE;
+    ++halfmove_clock_;
+    if (side_to_move_ == BLACK)
+        ++fullmove_number_;
+    side_to_move_ = ~side_to_move_;
+    key_ ^= zobrist::side();
+    assert(is_consistent());
+}
+
+void Position::undo_null_move(const StateInfo& state) noexcept {
+    assert(is_consistent());
+    side_to_move_ = ~side_to_move_;
+    castling_rights_ = state.castling_rights;
+    ep_square_ = state.ep_square;
+    halfmove_clock_ = state.halfmove_clock;
+    fullmove_number_ = state.fullmove_number;
+    key_ = state.key;
+    assert(is_consistent());
+}
+
 Key Position::compute_key() const noexcept {
     Key result = zobrist::castling(castling_rights_);
 

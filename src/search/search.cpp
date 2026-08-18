@@ -39,6 +39,13 @@ inline constexpr std::size_t LMP_BASE_MOVE_LIMIT = 3;
 inline constexpr int QUIET_HISTORY_MAX = 8'192;
 inline constexpr Depth LMR_MIN_DEPTH = 2;
 inline constexpr std::size_t LMR_MIN_MOVE_COUNT = 3;
+inline constexpr Depth NMP_MIN_DEPTH = 3;
+inline constexpr Depth NMP_VERIFICATION_DEPTH = 10;
+inline constexpr Value NMP_BASE_EVAL_MARGIN = 220;
+inline constexpr Value NMP_MARGIN_PER_DEPTH = 20;
+inline constexpr Value NMP_MIN_EVAL_MARGIN = 30;
+inline constexpr Value NMP_EVAL_GAP_PER_REDUCTION = 200;
+inline constexpr Depth NMP_MAX_GAP_REDUCTION = 3;
 inline constexpr Value QS_SEE_MARGIN = 74;
 inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
 inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
@@ -87,10 +94,12 @@ struct Context final {
     std::unique_ptr<PvTable> pv;
     std::vector<Key> keys;
     std::size_t root_key_index = 0;
+    std::size_t repetition_floor = 0;
     QuietHistory quiet_history{};
     KillerMoves killer_moves{};
     CounterMoves counter_moves{};
     std::array<Move, MAX_PLY> path_moves{};
+    int nmp_min_ply = 0;
     SearchStats stats{};
     bool stopped = false;
     std::chrono::steady_clock::time_point soft_deadline =
@@ -121,6 +130,31 @@ public:
 private:
     Context& context_;
     Move move_;
+    StateInfo state_{};
+};
+
+class NullMoveGuard final {
+public:
+    explicit NullMoveGuard(Context& context) noexcept
+        : context_(context), old_repetition_floor_(context.repetition_floor) {
+        context_.position.do_null_move(state_);
+        context_.keys.push_back(context_.position.key());
+        context_.repetition_floor = context_.keys.size() - 1;
+        context_.table.prefetch(context_.position.key());
+    }
+
+    ~NullMoveGuard() {
+        context_.keys.pop_back();
+        context_.position.undo_null_move(state_);
+        context_.repetition_floor = old_repetition_floor_;
+    }
+
+    NullMoveGuard(const NullMoveGuard&) = delete;
+    NullMoveGuard& operator=(const NullMoveGuard&) = delete;
+
+private:
+    Context& context_;
+    std::size_t old_repetition_floor_ = 0;
     StateInfo state_{};
 };
 
@@ -180,6 +214,37 @@ private:
             || (bishops & ~ONE_SQUARE_COLOR) == EMPTY_BB);
 }
 
+[[nodiscard]] bool has_non_pawn_material(
+    const Position& position,
+    Color side
+) noexcept {
+    return (position.pieces(side, KNIGHT)
+          | position.pieces(side, BISHOP)
+          | position.pieces(side, ROOK)
+          | position.pieces(side, QUEEN)) != EMPTY_BB;
+}
+
+[[nodiscard]] Value nmp_eval_margin(Depth depth) noexcept {
+    return std::max(
+        NMP_MIN_EVAL_MARGIN,
+        NMP_BASE_EVAL_MARGIN - NMP_MARGIN_PER_DEPTH * depth
+    );
+}
+
+[[nodiscard]] Depth null_move_reduction(
+    Depth depth,
+    Value static_eval,
+    Value beta
+) noexcept {
+    assert(depth >= NMP_MIN_DEPTH && static_eval >= beta);
+    const Value eval_gap = static_eval - beta;
+    const Depth gap_reduction = std::min(
+        NMP_MAX_GAP_REDUCTION,
+        static_cast<Depth>(eval_gap / NMP_EVAL_GAP_PER_REDUCTION)
+    );
+    return 3 + depth / 3 + gap_reduction;
+}
+
 [[nodiscard]] bool is_repetition(const Context& context) noexcept {
     assert(!context.keys.empty());
     const Key current = context.keys.back();
@@ -190,9 +255,14 @@ private:
     const std::size_t first = current_index > reversible
         ? current_index - reversible
         : 0;
+    const std::size_t first_repetition_index = std::max(
+        first,
+        context.repetition_floor
+    );
 
     int matches_before_root = 0;
-    for (std::size_t index = current_index; index-- > first;) {
+    for (std::size_t index = current_index;
+         index-- > first_repetition_index;) {
         if (context.keys[index] != current)
             continue;
 
@@ -492,7 +562,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     Value alpha,
     Value beta,
     int ply,
-    bool pv_node
+    bool pv_node,
+    bool allow_null = true
 ) noexcept {
     assert(depth >= 0);
     assert(alpha < beta);
@@ -594,6 +665,82 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             && raw_static_eval >= rfp_threshold) {
             ++context.stats.rfp_cutoffs;
             return beta;
+        }
+    }
+
+    // Reckless-style NMP: require a static-eval cushion, then search a
+    // dynamically reduced null position. The reduction grows with depth and
+    // with the eval gap; only deep fail-highs pay for verification.
+    const std::int64_t nmp_threshold = static_cast<std::int64_t>(beta)
+        + nmp_eval_margin(depth);
+    if (!pv_node
+        && !checked
+        && allow_null
+        && depth >= NMP_MIN_DEPTH
+        && is_eval_value(beta)
+        && is_eval_value(raw_static_eval)
+        && nmp_threshold <= VALUE_EVAL_MAX
+        && raw_static_eval >= nmp_threshold
+        && ply >= context.nmp_min_ply
+        && has_non_pawn_material(
+            context.position,
+            context.position.side_to_move()
+        )) {
+        const Depth reduction = null_move_reduction(
+            depth,
+            raw_static_eval,
+            beta
+        );
+        const Depth null_depth = std::max(Depth{0}, depth - reduction);
+        context.path_moves[static_cast<std::size_t>(ply)] = {};
+        ++context.stats.nmp_searches;
+
+        Value null_score = VALUE_NONE;
+        {
+            NullMoveGuard guard(context);
+            const Value child = pvs(
+                context,
+                null_depth,
+                -beta,
+                -beta + 1,
+                ply + 1,
+                false,
+                false
+            );
+            if (child == VALUE_NONE)
+                return VALUE_NONE;
+            null_score = -child;
+        }
+
+        if (null_score >= beta && is_eval_value(null_score)) {
+            if (context.nmp_min_ply > 0
+                || depth < NMP_VERIFICATION_DEPTH) {
+                ++context.stats.nmp_cutoffs;
+                return beta;
+            }
+
+            ++context.stats.nmp_verifications;
+            const int old_nmp_min_ply = context.nmp_min_ply;
+            context.nmp_min_ply = ply + std::max(
+                1,
+                3 * static_cast<int>(null_depth) / 4
+            );
+            const Value verified = pvs(
+                context,
+                null_depth,
+                beta - 1,
+                beta,
+                ply,
+                false,
+                false
+            );
+            context.nmp_min_ply = old_nmp_min_ply;
+            if (verified == VALUE_NONE)
+                return VALUE_NONE;
+            if (verified >= beta) {
+                ++context.stats.nmp_cutoffs;
+                return beta;
+            }
         }
     }
 
