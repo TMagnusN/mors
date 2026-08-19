@@ -203,6 +203,8 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
     return expect(result.completed_depth == 4, "RFP exercise search must complete")
         && expect(result.stats.rfp_cutoffs > 0,
                   "non-PV shallow nodes must exercise reverse futility pruning")
+        && expect(result.stats.ffp_prunes > 0,
+                  "non-PV quiets must exercise forward futility pruning")
         && expect(result.stats.lmp_prunes > 0,
                   "non-PV shallow nodes must exercise late-move pruning")
         && expect(result.stats.lmr_searches > 0,

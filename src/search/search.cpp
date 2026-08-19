@@ -36,6 +36,11 @@ inline constexpr Depth RFP_MAX_DEPTH = 6;
 inline constexpr Value RFP_MARGIN_PER_DEPTH = 100;
 inline constexpr Depth LMP_MAX_DEPTH = 4;
 inline constexpr std::size_t LMP_BASE_MOVE_LIMIT = 3;
+inline constexpr Depth FFP_MAX_DEPTH = 8;
+inline constexpr Value FFP_MARGIN_PER_DEPTH = 80;
+inline constexpr int FFP_HISTORY_MULTIPLIER = 55;
+inline constexpr int FFP_HISTORY_DIVISOR = 1'024;
+inline constexpr Value FFP_BASE_OFFSET = 40;
 inline constexpr int QUIET_HISTORY_MAX = 8'192;
 inline constexpr Depth LMR_MIN_DEPTH = 2;
 inline constexpr std::size_t LMR_MIN_MOVE_COUNT = 3;
@@ -752,6 +757,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     std::size_t quiet_move_count = 0;
     std::array<Move, MAX_MOVES> searched_quiets{};
     std::size_t searched_quiet_count = 0;
+    bool skip_quiets = false;
     const bool lmp_node = !pv_node
                        && !checked
                        && depth <= LMP_MAX_DEPTH
@@ -775,6 +781,55 @@ void update_pv(Context& context, int ply, Move move) noexcept {
 
         bool checking = false;
         bool checking_known = false;
+
+        // Forward futility pruning: once a history-adjusted upper estimate
+        // cannot reach alpha, the remaining ordinary quiets are no better by
+        // move order.  Keep walking the list for tactical noisies, castling,
+        // and direct checks instead of terminating the move loop.
+        const bool ffp_candidate = !pv_node
+                                && !checked
+                                && quiet
+                                && move.type() != CASTLING
+                                && move != tt_move
+                                && depth <= FFP_MAX_DEPTH
+                                && move_count > 0
+                                && is_eval_value(alpha)
+                                && is_eval_value(raw_static_eval)
+                                && is_eval_value(best_value);
+        if (ffp_candidate && skip_quiets) {
+            checking = gives_check(context.position, move);
+            checking_known = true;
+            if (!checking) {
+                ++context.stats.ffp_prunes;
+                continue;
+            }
+        }
+
+        if (ffp_candidate && !skip_quiets) {
+            const std::int64_t futility_value =
+                static_cast<std::int64_t>(raw_static_eval)
+                + static_cast<std::int64_t>(FFP_MARGIN_PER_DEPTH) * depth
+                + static_cast<std::int64_t>(FFP_HISTORY_MULTIPLIER)
+                    * history / FFP_HISTORY_DIVISOR
+                - FFP_BASE_OFFSET;
+            if (futility_value <= alpha) {
+                checking = gives_check(context.position, move);
+                checking_known = true;
+                if (!checking) {
+                    // The skipped quiet still contributes its conservative
+                    // upper estimate.  Without this, the node could store a
+                    // much lower searched score as an overconfident TT upper
+                    // bound even though the pruned move may score higher.
+                    best_value = std::max(
+                        best_value,
+                        clamp_eval(futility_value)
+                    );
+                    skip_quiets = true;
+                    ++context.stats.ffp_prunes;
+                    continue;
+                }
+            }
+        }
 
         // Quiet history makes the depth-squared prefix meaningful. Preserve
         // tactically exceptional quiets and give successful moves more room.

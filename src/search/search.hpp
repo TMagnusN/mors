@@ -50,6 +50,7 @@ struct SearchStats final {
     std::uint64_t tt_cutoffs = 0;
     std::uint64_t static_eval_cache_hits = 0;
     std::uint64_t rfp_cutoffs = 0;
+    std::uint64_t ffp_prunes = 0;
     std::uint64_t lmp_prunes = 0;
     std::uint64_t lmr_searches = 0;
     std::uint64_t lmr_researches = 0;
