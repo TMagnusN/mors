@@ -197,10 +197,10 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
         *parsed,
         table,
         network,
-        SearchLimits{.max_depth = 4}
+        SearchLimits{.max_depth = 6}
     );
 
-    return expect(result.completed_depth == 4, "RFP exercise search must complete")
+    return expect(result.completed_depth == 6, "selective-search exercise must complete")
         && expect(result.stats.rfp_cutoffs > 0,
                   "non-PV shallow nodes must exercise reverse futility pruning")
         && expect(result.stats.ffp_prunes > 0,
@@ -215,6 +215,13 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
                   "non-PV eval fail-highs must exercise null-move probes")
         && expect(result.stats.nmp_cutoffs <= result.stats.nmp_searches,
                   "NMP cutoffs must come from null-move probes")
+        && expect(result.stats.singular_searches > 0,
+                  "deep TT moves must exercise singular verification")
+        && expect(result.stats.singular_extensions > 0,
+                  "singular verification must extend a proven TT move")
+        && expect(result.stats.singular_extensions
+                      <= result.stats.singular_searches,
+                  "singular extensions must come from verification searches")
         && expect(result.stats.qsearch_see_prunes > 0,
                   "qsearch must exercise threshold SEE pruning")
         && expect(result.stats.qsearch_lmp_prunes > 0,

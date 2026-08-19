@@ -51,6 +51,9 @@ inline constexpr Value NMP_MARGIN_PER_DEPTH = 20;
 inline constexpr Value NMP_MIN_EVAL_MARGIN = 30;
 inline constexpr Value NMP_EVAL_GAP_PER_REDUCTION = 200;
 inline constexpr Depth NMP_MAX_GAP_REDUCTION = 3;
+inline constexpr Depth SE_MIN_DEPTH = 4;
+inline constexpr Depth SE_TT_DEPTH_MARGIN = 2;
+inline constexpr Value SE_MARGIN_PER_DEPTH = 2;
 inline constexpr Value QS_SEE_MARGIN = 74;
 inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
 inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
@@ -568,7 +571,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     Value beta,
     int ply,
     bool pv_node,
-    bool allow_null = true
+    bool allow_null = true,
+    Move excluded_move = {}
 ) noexcept {
     assert(depth >= 0);
     assert(alpha < beta);
@@ -577,7 +581,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     if (depth == 0)
         return qsearch(context, alpha, beta, ply);
 
-    clear_pv(context, ply);
+    const bool excluded_search = !excluded_move.is_none();
+    if (!excluded_search)
+        clear_pv(context, ply);
 
     if (!begin_node(context, ply, false))
         return VALUE_NONE;
@@ -602,29 +608,32 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     TTProbe probe = context.table.probe(context.position.key());
     bool tt_hit = probe.hit;
     Move tt_move{};
+    Value tt_value = VALUE_NONE;
     if (tt_hit) {
         ++context.stats.tt_hits;
         if (!contains_move(moves, probe.data.move)) {
             tt_hit = false;
         } else {
-            tt_move = probe.data.move;
-            const Value tt_value = value_from_tt(
+            tt_value = value_from_tt(
                 probe.data.value,
                 ply,
                 context.position.halfmove_clock()
             );
-            const bool depth_ok = probe.data.depth >= depth;
-            const bool bound_ok =
-                   probe.data.bound == BOUND_EXACT
-                || (probe.data.bound == BOUND_LOWER && tt_value >= beta)
-                || (probe.data.bound == BOUND_UPPER && tt_value <= alpha);
+            if (!excluded_search) {
+                tt_move = probe.data.move;
+                const bool depth_ok = probe.data.depth >= depth;
+                const bool bound_ok =
+                       probe.data.bound == BOUND_EXACT
+                    || (probe.data.bound == BOUND_LOWER && tt_value >= beta)
+                    || (probe.data.bound == BOUND_UPPER && tt_value <= alpha);
 
-            if (!pv_node
-                && tt_value != VALUE_NONE
-                && depth_ok
-                && bound_ok) {
-                ++context.stats.tt_cutoffs;
-                return tt_value;
+                if (!pv_node
+                    && tt_value != VALUE_NONE
+                    && depth_ok
+                    && bound_ok) {
+                    ++context.stats.tt_cutoffs;
+                    return tt_value;
+                }
             }
         }
     }
@@ -644,7 +653,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             // Populate an evaluation-only entry on a true miss. Do not replace
             // an existing searched entry merely because it predates cached
             // static evaluations; the normal node write below will refresh it.
-            if (!probe.hit) {
+            if (!excluded_search && !probe.hit) {
                 probe.writer.write({
                     .move = {},
                     .value = VALUE_NONE,
@@ -663,7 +672,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             static_cast<std::int64_t>(RFP_MARGIN_PER_DEPTH) * depth;
         const std::int64_t rfp_threshold =
             static_cast<std::int64_t>(beta) + rfp_margin;
-        if (!pv_node
+        if (!excluded_search
+            && !pv_node
             && depth <= RFP_MAX_DEPTH
             && is_eval_value(beta)
             && rfp_threshold <= VALUE_EVAL_MAX
@@ -678,7 +688,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     // with the eval gap; only deep fail-highs pay for verification.
     const std::int64_t nmp_threshold = static_cast<std::int64_t>(beta)
         + nmp_eval_margin(depth);
-    if (!pv_node
+    if (!excluded_search
+        && !pv_node
         && !checked
         && allow_null
         && depth >= NMP_MIN_DEPTH
@@ -751,6 +762,43 @@ void update_pv(Context& context, int ply, Move move) noexcept {
 
     order_moves(context, moves, ply, tt_move);
 
+    Depth singular_extension = 0;
+    const bool singular_candidate = !excluded_search
+                                 && ply > 0
+                                 && depth >= SE_MIN_DEPTH
+                                 && !tt_move.is_none()
+                                 && is_eval_value(tt_value)
+                                 && probe.data.depth + SE_TT_DEPTH_MARGIN >= depth
+                                 && (probe.data.bound == BOUND_LOWER
+                                     || probe.data.bound == BOUND_EXACT);
+    if (singular_candidate) {
+        const Value singular_beta = clamp_eval(
+            static_cast<std::int64_t>(tt_value)
+            - static_cast<std::int64_t>(SE_MARGIN_PER_DEPTH) * depth
+        );
+        const Depth verification_depth = std::max(
+            Depth{1},
+            (depth - 1) / 2
+        );
+        ++context.stats.singular_searches;
+        const Value alternatives = pvs(
+            context,
+            verification_depth,
+            singular_beta - 1,
+            singular_beta,
+            ply,
+            false,
+            false,
+            tt_move
+        );
+        if (alternatives == VALUE_NONE)
+            return VALUE_NONE;
+        if (alternatives < singular_beta) {
+            singular_extension = 1;
+            ++context.stats.singular_extensions;
+        }
+    }
+
     Value best_value = -VALUE_INFINITE;
     Move best_move{};
     std::size_t move_count = 0;
@@ -758,7 +806,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     std::array<Move, MAX_MOVES> searched_quiets{};
     std::size_t searched_quiet_count = 0;
     bool skip_quiets = false;
-    const bool lmp_node = !pv_node
+    const bool lmp_node = !excluded_search
+                       && !pv_node
                        && !checked
                        && depth <= LMP_MAX_DEPTH
                        && is_eval_value(alpha)
@@ -767,6 +816,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         + static_cast<std::size_t>(depth * depth);
 
     for (const Move move : moves) {
+        if (move == excluded_move)
+            continue;
+
         const bool quiet = !is_capture(context.position, move)
                         && move.type() != PROMOTION;
         if (quiet)
@@ -786,7 +838,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         // cannot reach alpha, the remaining ordinary quiets are no better by
         // move order.  Keep walking the list for tactical noisies, castling,
         // and direct checks instead of terminating the move loop.
-        const bool ffp_candidate = !pv_node
+        const bool ffp_candidate = !excluded_search
+                                && !pv_node
                                 && !checked
                                 && quiet
                                 && move.type() != CASTLING
@@ -849,7 +902,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
 
         Depth reduction = 0;
-        if (!checked
+        if (!excluded_search
+            && !checked
             && quiet
             && move.type() != CASTLING
             && move != tt_move
@@ -869,6 +923,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
 
         context.path_moves[static_cast<std::size_t>(ply)] = move;
+        const Depth extension = move == tt_move ? singular_extension : 0;
+        const Depth child_depth = depth - 1 + extension;
         Value score = VALUE_NONE;
         {
             MoveGuard guard(context, move);
@@ -876,7 +932,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             if (move_count == 0) {
                 const Value child = pvs(
                     context,
-                    depth - 1,
+                    child_depth,
                     -beta,
                     -alpha,
                     ply + 1,
@@ -890,7 +946,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                     ++context.stats.lmr_searches;
                 Value probe_value = pvs(
                     context,
-                    depth - 1 - reduction,
+                    child_depth - reduction,
                     -alpha - 1,
                     -alpha,
                     ply + 1,
@@ -906,7 +962,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                     ++context.stats.lmr_researches;
                     probe_value = pvs(
                         context,
-                        depth - 1,
+                        child_depth,
                         -alpha - 1,
                         -alpha,
                         ply + 1,
@@ -921,7 +977,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                     ++context.stats.pvs_researches;
                     const Value child = pvs(
                         context,
-                        depth - 1,
+                        child_depth,
                         -beta,
                         -alpha,
                         ply + 1,
@@ -943,10 +999,11 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
         if (score > alpha) {
             alpha = score;
-            update_pv(context, ply, move);
+            if (!excluded_search)
+                update_pv(context, ply, move);
         }
         if (alpha >= beta) {
-            if (quiet) {
+            if (!excluded_search && quiet) {
                 const int bonus = std::min(2'048, 32 * depth * depth);
                 const Color side = context.position.side_to_move();
                 update_quiet_history(
@@ -988,18 +1045,23 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
     }
 
+    if (excluded_search && move_count == 0)
+        return original_alpha;
+
     assert(best_value != -VALUE_INFINITE && !best_move.is_none());
     const Bound bound = best_value >= beta                 ? BOUND_LOWER
                       : best_value <= original_alpha       ? BOUND_UPPER
                                                           : BOUND_EXACT;
-    probe.writer.write({
-        .move = best_move,
-        .value = value_to_tt(best_value, ply),
-        .static_eval = raw_static_eval,
-        .depth = depth,
-        .bound = bound,
-        .pv = pv_node
-    });
+    if (!excluded_search) {
+        probe.writer.write({
+            .move = best_move,
+            .value = value_to_tt(best_value, ply),
+            .static_eval = raw_static_eval,
+            .depth = depth,
+            .bound = bound,
+            .pv = pv_node
+        });
+    }
     return best_value;
 }
 
