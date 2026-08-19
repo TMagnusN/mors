@@ -1,0 +1,50 @@
+version = 1
+
+[artifact]
+deployed_file = "mors-p2h32.nnue"
+source_file = "mors-p2h32-s14400M-o3183M-c+frc-200.mnue"
+sha256 = "F9A996768AE627666718C9F88F4E604D1CA0723D03CFC63E134E18DD082E0D57"
+bytes = 27527336
+completed_superbatch = 200
+completed_on = "2026-08-19"
+
+[architecture]
+name = "p2-h32"
+feature_mapping = "canonical-hmirror-v1"
+coarse_inputs = 10240
+coarse_hidden = 768
+fine_inputs = 22528
+fine_hidden = 256
+output_buckets = 64
+
+[dataset]
+path_at_training = "D:\\NNUE\\train_3b_shuffled.data"
+fingerprint = "metadata-v1\n34:\\\\?\\D:\\NNUE\\train_3b_shuffled.data:101843994144:1775883851211015000"
+shuffle_mode = "sequential"
+seed = 1
+
+[training]
+requested_positions = 14400000000
+effective_positions = 14401536000
+batch_size = 16384
+threads = 4
+superbatches = 200
+positions_per_superbatch = 72007680
+save_every_superbatches = 4
+learning_rate = 0.001
+final_learning_rate = 0.0000625
+coarse_init_scale = 0.25
+fine_init_scale = 0.125
+
+[promotion_test]
+time_control = "10+0.1"
+hash_mb = 128
+book = "UHO_4060_v4.epd"
+games_at_promotion = 80
+wins = 42
+losses = 6
+draws = 32
+elo = 168.40
+elo_error_95 = 50.16
+los_percent = 100.0
+baseline_sha256 = "339BB2B39C3D3D3B2F87545EAF503DAC5455DA8FE546E44D02E51E1828C98C74"
