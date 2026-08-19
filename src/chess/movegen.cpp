@@ -226,7 +226,7 @@ template<PieceType Type>
         return queen_attacks(from, occupied);
 }
 
-template<Color Us, PieceType Type>
+template<Color Us, PieceType Type, bool NoisyOnly>
 void generate_legal_pieces(
     const Position& position,
     const LegalGenInfo& info,
@@ -241,6 +241,9 @@ void generate_legal_pieces(
         Bitboard destinations = legal_piece_attacks<Type>(from, info.occupied)
                               & ~forbidden
                               & info.evasion_mask;
+
+        if constexpr (NoisyOnly)
+            destinations &= info.capture_targets;
 
         if (contains(info.pinned, from))
             destinations &= line_bb(info.king, from);
@@ -266,7 +269,7 @@ void append_pawn_promotions(Bitboard targets, MoveList& moves) noexcept {
     }
 }
 
-template<Color Us>
+template<Color Us, bool NoisyOnly>
 void generate_legal_pawns(
     Position& position,
     const LegalGenInfo& info,
@@ -290,12 +293,14 @@ void generate_legal_pawns(
     const Bitboard ordinary_pawns = unpinned & ~PromotionFrom;
     const Bitboard empty = ~info.occupied;
 
-    Bitboard one = shift<Push>(ordinary_pawns) & empty;
-    Bitboard two = shift<Push>(one & DoublePushMiddle) & empty;
-    one &= info.evasion_mask;
-    two &= info.evasion_mask;
-    append_pawn_targets<PushDelta>(one, moves);
-    append_pawn_targets<2 * PushDelta>(two, moves);
+    if constexpr (!NoisyOnly) {
+        Bitboard one = shift<Push>(ordinary_pawns) & empty;
+        Bitboard two = shift<Push>(one & DoublePushMiddle) & empty;
+        one &= info.evasion_mask;
+        two &= info.evasion_mask;
+        append_pawn_targets<PushDelta>(one, moves);
+        append_pawn_targets<2 * PushDelta>(two, moves);
+    }
 
     Bitboard promotions = shift<Push>(promotion_pawns) & empty & info.evasion_mask;
     append_pawn_promotions<PushDelta>(promotions, moves);
@@ -331,16 +336,18 @@ void generate_legal_pawns(
                 if ((allowed & to_bb) != EMPTY_BB) {
                     if (rank_of(from) == PromotionRank)
                         add_promotions(moves, from, to);
-                    else
+                    else if constexpr (!NoisyOnly)
                         moves.push(Move::normal(from, to));
                 }
 
-                if (rank_of(from) == StartRank) {
-                    const Square double_to = Square(int(from) + 2 * PushDelta);
-                    const Bitboard double_to_bb = square_bb(double_to);
-                    if ((info.occupied & double_to_bb) == EMPTY_BB
-                        && (allowed & double_to_bb) != EMPTY_BB) {
-                        moves.push(Move::normal(from, double_to));
+                if constexpr (!NoisyOnly) {
+                    if (rank_of(from) == StartRank) {
+                        const Square double_to = Square(int(from) + 2 * PushDelta);
+                        const Bitboard double_to_bb = square_bb(double_to);
+                        if ((info.occupied & double_to_bb) == EMPTY_BB
+                            && (allowed & double_to_bb) != EMPTY_BB) {
+                            moves.push(Move::normal(from, double_to));
+                        }
                     }
                 }
             }
@@ -387,7 +394,7 @@ void generate_legal_pawns(
     }
 }
 
-template<Color Us>
+template<Color Us, bool NoisyOnly>
 void generate_legal_king(
     const Position& position,
     const LegalGenInfo& info,
@@ -396,6 +403,8 @@ void generate_legal_king(
     constexpr Color Them = Us == WHITE ? BLACK : WHITE;
     const Bitboard forbidden = info.us | position.pieces(Them, KING);
     Bitboard destinations = king_attacks(info.king) & ~forbidden;
+    if constexpr (NoisyOnly)
+        destinations &= info.capture_targets;
     const Bitboard king_bb = square_bb(info.king);
 
     while (destinations) {
@@ -406,21 +415,23 @@ void generate_legal_king(
     }
 }
 
-template<Color Us>
+template<Color Us, bool NoisyOnly>
 void generate_direct_legal(Position& position, MoveList& moves) noexcept {
     const LegalGenInfo info = make_legal_info<Us>(position);
 
     if (!info.double_check) {
-        generate_legal_pawns<Us>(position, info, moves);
-        generate_legal_pieces<Us, KNIGHT>(position, info, moves);
-        generate_legal_pieces<Us, BISHOP>(position, info, moves);
-        generate_legal_pieces<Us, ROOK>(position, info, moves);
-        generate_legal_pieces<Us, QUEEN>(position, info, moves);
+        generate_legal_pawns<Us, NoisyOnly>(position, info, moves);
+        generate_legal_pieces<Us, KNIGHT, NoisyOnly>(position, info, moves);
+        generate_legal_pieces<Us, BISHOP, NoisyOnly>(position, info, moves);
+        generate_legal_pieces<Us, ROOK, NoisyOnly>(position, info, moves);
+        generate_legal_pieces<Us, QUEEN, NoisyOnly>(position, info, moves);
     }
 
-    generate_legal_king<Us>(position, info, moves);
-    if (info.checkers == EMPTY_BB)
-        generate_castling<Us>(position, moves);
+    generate_legal_king<Us, NoisyOnly>(position, info, moves);
+    if constexpr (!NoisyOnly) {
+        if (info.checkers == EMPTY_BB)
+            generate_castling<Us>(position, moves);
+    }
 }
 
 } // namespace
@@ -436,9 +447,17 @@ void generate_pseudo_legal(const Position& position, MoveList& moves) noexcept {
 void generate_legal(Position& position, MoveList& moves) noexcept {
     assert(moves.empty() && position.is_consistent());
     if (position.side_to_move() == WHITE)
-        generate_direct_legal<WHITE>(position, moves);
+        generate_direct_legal<WHITE, false>(position, moves);
     else
-        generate_direct_legal<BLACK>(position, moves);
+        generate_direct_legal<BLACK, false>(position, moves);
+}
+
+void generate_legal_noisy(Position& position, MoveList& moves) noexcept {
+    assert(moves.empty() && position.is_consistent());
+    if (position.side_to_move() == WHITE)
+        generate_direct_legal<WHITE, true>(position, moves);
+    else
+        generate_direct_legal<BLACK, true>(position, moves);
 }
 
 } // namespace mors

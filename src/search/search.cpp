@@ -1018,10 +1018,13 @@ void update_pv(Context& context, int ply, Move move) noexcept {
 
     const bool checked = in_check(context.position);
     MoveList moves;
-    generate_legal(context.position, moves);
+    if (checked)
+        generate_legal(context.position, moves);
+    else
+        generate_legal_noisy(context.position, moves);
 
-    if (moves.empty())
-        return checked ? mated_in(ply) : VALUE_DRAW;
+    if (checked && moves.empty())
+        return mated_in(ply);
     if (is_draw(context, ply))
         return VALUE_DRAW;
     if (ply == MAX_PLY)

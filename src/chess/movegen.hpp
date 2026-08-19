@@ -17,4 +17,8 @@ void generate_pseudo_legal(const Position& position, MoveList& moves) noexcept;
 // en-passant edge case uses make/unmake as a final king-safety oracle.
 void generate_legal(Position& position, MoveList& moves) noexcept;
 
+// Generates only legal captures and promotions. This is the tactical subset
+// consumed by non-check quiescence nodes.
+void generate_legal_noisy(Position& position, MoveList& moves) noexcept;
+
 } // namespace mors

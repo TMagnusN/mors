@@ -51,15 +51,30 @@ bool cross_check_legal_moves(mors::Position& position, int depth) {
     mors::MoveList actual;
     mors::generate_legal(position, actual);
 
+    mors::MoveList noisy;
+    mors::generate_legal_noisy(position, noisy);
+
     mors::MoveList pseudo;
     mors::generate_pseudo_legal(position, pseudo);
 
     std::array<std::uint16_t, mors::MAX_MOVES> actual_raw{};
     std::array<std::uint16_t, mors::MAX_MOVES> reference_raw{};
+    std::array<std::uint16_t, mors::MAX_MOVES> noisy_raw{};
+    std::array<std::uint16_t, mors::MAX_MOVES> expected_noisy_raw{};
     std::size_t reference_size = 0;
+    std::size_t expected_noisy_size = 0;
 
-    for (std::size_t index = 0; index < actual.size(); ++index)
+    for (std::size_t index = 0; index < actual.size(); ++index) {
         actual_raw[index] = actual[index].raw();
+        const mors::Move move = actual[index];
+        const bool is_noisy = move.type() == mors::PROMOTION
+                           || move.type() == mors::EN_PASSANT
+                           || position.piece_on(move.to()) != mors::NO_PIECE;
+        if (is_noisy)
+            expected_noisy_raw[expected_noisy_size++] = move.raw();
+    }
+    for (std::size_t index = 0; index < noisy.size(); ++index)
+        noisy_raw[index] = noisy[index].raw();
 
     const mors::Color us = position.side_to_move();
     const mors::Color them = ~us;
@@ -81,6 +96,23 @@ bool cross_check_legal_moves(mors::Position& position, int depth) {
         std::cerr << "FAIL movegen cross-check: " << position.fen()
                   << " direct=" << actual.size()
                   << " reference=" << reference_size << '\n';
+        return false;
+    }
+
+    std::sort(noisy_raw.begin(), noisy_raw.begin() + noisy.size());
+    std::sort(
+        expected_noisy_raw.begin(),
+        expected_noisy_raw.begin() + expected_noisy_size
+    );
+    if (noisy.size() != expected_noisy_size
+        || !std::equal(
+            noisy_raw.begin(),
+            noisy_raw.begin() + noisy.size(),
+            expected_noisy_raw.begin()
+        )) {
+        std::cerr << "FAIL noisy movegen cross-check: " << position.fen()
+                  << " noisy=" << noisy.size()
+                  << " expected=" << expected_noisy_size << '\n';
         return false;
     }
 
