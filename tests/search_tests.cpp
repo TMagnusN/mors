@@ -224,6 +224,9 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
         && expect(result.stats.singular_extensions
                       <= result.stats.singular_searches,
                   "singular extensions must come from verification searches")
+        && expect(result.stats.singular_reductions
+                      <= result.stats.singular_searches,
+                  "singular reductions must come from verification searches")
         && expect(result.stats.singular_multicut_cutoffs
                       <= result.stats.singular_searches,
                   "singular multi-cut cutoffs must come from verification searches")

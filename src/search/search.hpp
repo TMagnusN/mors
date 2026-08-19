@@ -60,6 +60,7 @@ struct SearchStats final {
     std::uint64_t iir_reductions = 0;
     std::uint64_t singular_searches = 0;
     std::uint64_t singular_extensions = 0;
+    std::uint64_t singular_reductions = 0;
     std::uint64_t singular_multicut_cutoffs = 0;
     std::uint64_t qsearch_see_prunes = 0;
     std::uint64_t qsearch_lmp_prunes = 0;

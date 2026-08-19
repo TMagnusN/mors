@@ -764,7 +764,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     // Internal iterative reduction: without a legal TT move, the node has no
     // trustworthy search-derived ordering hint. Spend one ply less until a
     // later iteration supplies one.
-    if (depth >= IIR_MIN_DEPTH && tt_move.is_none()) {
+    if (!excluded_search
+        && depth >= IIR_MIN_DEPTH
+        && tt_move.is_none()) {
         --depth;
         ++context.stats.iir_reductions;
     }
@@ -808,6 +810,12 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         } else if (singular_beta >= beta) {
             ++context.stats.singular_multicut_cutoffs;
             return beta;
+        } else if (tt_value >= beta) {
+            // The TT move predicts a fail-high, but the excluded search found
+            // another move near its score. It is therefore not singular and
+            // does not deserve the full nominal depth.
+            singular_extension = -1;
+            ++context.stats.singular_reductions;
         }
     }
 
