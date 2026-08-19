@@ -51,6 +51,7 @@ inline constexpr Value NMP_MARGIN_PER_DEPTH = 20;
 inline constexpr Value NMP_MIN_EVAL_MARGIN = 30;
 inline constexpr Value NMP_EVAL_GAP_PER_REDUCTION = 200;
 inline constexpr Depth NMP_MAX_GAP_REDUCTION = 3;
+inline constexpr Depth IIR_MIN_DEPTH = 4;
 inline constexpr Depth SE_MIN_DEPTH = 4;
 inline constexpr Depth SE_TT_DEPTH_MARGIN = 2;
 inline constexpr Value SE_MARGIN_PER_DEPTH = 2;
@@ -758,6 +759,14 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                 return beta;
             }
         }
+    }
+
+    // Internal iterative reduction: without a legal TT move, the node has no
+    // trustworthy search-derived ordering hint. Spend one ply less until a
+    // later iteration supplies one.
+    if (depth >= IIR_MIN_DEPTH && tt_move.is_none()) {
+        --depth;
+        ++context.stats.iir_reductions;
     }
 
     order_moves(context, moves, ply, tt_move);

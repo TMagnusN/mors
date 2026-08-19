@@ -57,6 +57,7 @@ struct SearchStats final {
     std::uint64_t nmp_searches = 0;
     std::uint64_t nmp_cutoffs = 0;
     std::uint64_t nmp_verifications = 0;
+    std::uint64_t iir_reductions = 0;
     std::uint64_t singular_searches = 0;
     std::uint64_t singular_extensions = 0;
     std::uint64_t singular_multicut_cutoffs = 0;

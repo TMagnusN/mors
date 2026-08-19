@@ -215,6 +215,8 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
                   "non-PV eval fail-highs must exercise null-move probes")
         && expect(result.stats.nmp_cutoffs <= result.stats.nmp_searches,
                   "NMP cutoffs must come from null-move probes")
+        && expect(result.stats.iir_reductions > 0,
+                  "IIR should reduce deep nodes without a TT move")
         && expect(result.stats.singular_searches > 0,
                   "deep TT moves must exercise singular verification")
         && expect(result.stats.singular_extensions > 0,
