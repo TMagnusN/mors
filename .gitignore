@@ -1,4 +1,5 @@
 /build/
+/stc/
 *.exe
 *.o
 *.d
