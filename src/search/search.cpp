@@ -796,6 +796,9 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         if (alternatives < singular_beta) {
             singular_extension = 1;
             ++context.stats.singular_extensions;
+        } else if (singular_beta >= beta) {
+            ++context.stats.singular_multicut_cutoffs;
+            return beta;
         }
     }
 
