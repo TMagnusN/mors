@@ -8,6 +8,7 @@
 #include "chess/movegen.hpp"
 #include "chess/position.hpp"
 #include "eval/nnue/network.hpp"
+#include "eval/nnue/wdl.hpp"
 #include "search/score.hpp"
 #include "search/search.hpp"
 #include "search/time.hpp"
@@ -71,7 +72,7 @@ namespace {
 
 [[nodiscard]] std::filesystem::path find_default_network() {
     const std::filesystem::path directory = executable_directory();
-    const std::filesystem::path filename = "mors-p2h32.nnue";
+    const std::filesystem::path filename = "mors-p2h32-s14400M-o3183M-c+frc.mnue";
     const std::array<std::filesystem::path, 7> candidates{
         directory / filename,
         directory / "networks" / filename,
@@ -187,9 +188,13 @@ template<typename Integer>
     return std::move(*parsed);
 }
 
-void emit_score(std::ostream& output, Value value) {
+void emit_score(
+    std::ostream& output,
+    Value value,
+    const Position& root
+) {
     if (!is_mate_value(value)) {
-        output << "score cp " << value;
+        output << "score cp " << nnue::score_to_cp(value, root);
         return;
     }
 
@@ -219,11 +224,12 @@ public:
 
         if (command == "uci") {
             std::ostringstream response;
-            response << "id name MORS\n"
-                     << "id author Theodore Magnus Øen\n"
+            response << "id name MORS 0.0.1-dev\n"
+                     << "id author Theodore Magnus Oen\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
                      << "option name Clear Hash type button\n"
+                     << "option name EvalFile type string default mors-p2h32-s14400M-o3183M-c+frc.mnue" << "\n"
                      << "option name Move Overhead type spin default "
                      << timeman::DEFAULT_MOVE_OVERHEAD_MS
                      << " min " << timeman::MIN_MOVE_OVERHEAD_MS
@@ -315,8 +321,34 @@ private:
         }
 
         std::string value_text;
-        if (!(stream >> value_text)) {
+        std::getline(stream, value_text);
+        const std::size_t value_begin = value_text.find_first_not_of(" \t");
+        if (value_begin == std::string::npos) {
             emit(output, "info string missing option value\n");
+            return;
+        }
+        value_text.erase(0, value_begin);
+        const std::size_t value_end = value_text.find_last_not_of(" \t");
+        value_text.erase(value_end + 1);
+        if (value_text.size() >= 2
+            && value_text.front() == '"'
+            && value_text.back() == '"') {
+            value_text = value_text.substr(1, value_text.size() - 2);
+        }
+
+        if (name == "EvalFile") {
+            auto loaded = nnue::Network::load(
+                std::filesystem::path(value_text)
+            );
+            if (!loaded) {
+                emit(output, "info string EvalFile load failed: "
+                           + loaded.error() + "\n");
+                return;
+            }
+            network_ = std::move(*loaded);
+            table_.clear();
+            emit(output, "info string EvalFile loaded: "
+                       + network_.source().string() + "\n");
             return;
         }
 
@@ -503,43 +535,59 @@ private:
                  output = &output]() mutable {
                     limits.prior_keys = history;
                     try {
+                        limits.iteration_callback =
+                            [this, &root, started, output](
+                                const SearchResult& iteration
+                            ) {
+                                const auto elapsed =
+                                    std::chrono::steady_clock::now() - started;
+                                const auto elapsed_count =
+                                    std::chrono::duration_cast<
+                                        std::chrono::milliseconds
+                                    >(elapsed).count();
+                                const std::uint64_t elapsed_ms = elapsed_count > 0
+                                    ? static_cast<std::uint64_t>(elapsed_count)
+                                    : 0;
+                                const std::uint64_t nps = elapsed_ms != 0
+                                    ? iteration.stats.nodes * 1'000 / elapsed_ms
+                                    : 0;
+                                const nnue::WdlTriplet wdl =
+                                    nnue::score_to_wdl(iteration.value, root);
+
+                                std::ostringstream response;
+                                response << "info depth "
+                                         << iteration.completed_depth
+                                         << " seldepth "
+                                         << iteration.stats.seldepth << ' ';
+                                emit_score(response, iteration.value, root);
+                                response << " wdl " << wdl.win << ' '
+                                         << wdl.draw << ' ' << wdl.loss
+                                         << " nodes " << iteration.stats.nodes
+                                         << " nps " << nps
+                                         << " hashfull " << table_.hashfull()
+                                         << " time " << elapsed_ms
+                                         << " pv";
+                                for (std::size_t index = 0;
+                                     index < iteration.pv_length;
+                                     ++index) {
+                                    response << ' '
+                                             << move_to_uci(
+                                                    iteration
+                                                        .principal_variation[index]
+                                                );
+                                }
+                                response << '\n';
+                                emit(*output, response.str());
+                            };
+
                         const SearchResult result = search(
                             root,
                             table_,
                             network_,
                             limits
                         );
-                        const auto elapsed = std::chrono::steady_clock::now() - started;
-                        const auto elapsed_count =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
-                                .count();
-                        const std::uint64_t elapsed_ms = elapsed_count > 0
-                            ? static_cast<std::uint64_t>(elapsed_count)
-                            : 0;
-                        const std::uint64_t nps = elapsed_ms != 0
-                            ? result.stats.nodes * 1'000 / elapsed_ms
-                            : 0;
 
                         std::ostringstream response;
-                        if (result.completed_depth > 0) {
-                            response << "info depth " << result.completed_depth
-                                     << " seldepth " << result.stats.seldepth << ' ';
-                            emit_score(response, result.value);
-                            response << " nodes " << result.stats.nodes
-                                     << " nps " << nps
-                                     << " hashfull " << table_.hashfull()
-                                     << " time " << elapsed_ms
-                                     << " pv";
-                            for (std::size_t index = 0;
-                                 index < result.pv_length;
-                                 ++index) {
-                                response << ' '
-                                         << move_to_uci(
-                                                result.principal_variation[index]
-                                            );
-                            }
-                            response << '\n';
-                        }
                         const Move best_move = result.best_move.is_none()
                             ? fallback
                             : result.best_move;
@@ -580,7 +628,7 @@ int run_uci(std::istream& input, std::ostream& output) {
 
     const std::filesystem::path path = find_default_network();
     if (path.empty()) {
-        output << "info string NNUE network not found: mors-p2h32.nnue\n";
+        output << "info string NNUE network not found: mors-p2h32-s14400M-o3183M-c+frc.mnue\n";
         return 1;
     }
 

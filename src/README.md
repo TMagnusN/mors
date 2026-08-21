@@ -11,7 +11,7 @@ cancellation 結束目前 iteration 並回傳最後一個完整 depth 的結果�
 
 ## 設計目標
 
-- C++23，以 GNU Make 驅動 GCC、Clang 與 MinGW-w64 的 64-bit Release 建置。
+- C++23，以 GNU Make 驅動 GCC、Clang 與 MSY2 的 64-bit Release 建置。
 - 搜尋熱路徑無虛擬派發、無例外、無動態配置。
 - `Position::make_move()` / `unmake_move()`、走法產生與 TT 探查保持資料局部性。
 - UCI 只是介面卡；核心不可依賴文字協定、標準輸入輸出或命令列。
@@ -170,34 +170,166 @@ class Move; // 16-bit packed value；提供明確的建構與查詢 API
 
 ## Makefile 建置設計
 
-唯一正式建置入口是 `src/Makefile`。它依目錄列出 source group、把物件輸出至 `build/<config>/...`，最後連結成單一 `mors`（Windows 為 `mors.exe`）；不在原始碼目錄旁產生 `.o` 或相依檔。
-
-第一版目標：
+唯一正式建置入口是 `src/Makefile`。所有產物統一輸出至：
 
 ```text
-make                 # 等同 release
-make release         # -O3、NDEBUG，可選 LTO
-make debug           # -O0/-Og、debug symbols、assertions
-make native          # 針對目前 CPU 最佳化的本機版本
-make sanitize        # ASan + UBSan（編譯器支援時）
-make test            # 建置並執行單元測試
-make perft           # 走法產生正確性測試
-make bench           # 固定輸入的效能基準
-make format          # 格式化已追蹤的 C++ 原始碼
-make clean           # 只移除已解析並驗證過的 build 目錄
+build/<config>-<arch>/
 ```
 
-目前 slider attack backend 以 `ARCH` 選擇：
+物件檔與自動產生的 dependency file 位於對應 build 目錄，不在原始碼旁產生 `.o` 或 `.d`。
+
+目前支援：
 
 ```text
-ARCH=generic  # Magic bitboards，無 AVX2 需求
-ARCH=avx2     # 純 Dual Hyperbola Quintessence
-ARCH=hybrid   # bishop/rook 使用 Magic；queen/combined 使用 Dual HQ
-ARCH=pext     # BMI2 PEXT/PDEP，使用 16-bit 壓縮 attack tables
-ARCH=pext-avx2 # PEXT slider backend + AVX2 NNUE，適合支援兩者的現代 CPU
+CONFIG=release
+CONFIG=debug
+CONFIG=sanitize
+
+ARCH=generic
+ARCH=avx2
+ARCH=bmi2
+ARCH=avx2+bmi2
+
+LTO=0
+LTO=1
 ```
 
-所有組態必須使用 `-std=c++23`、自動產生 header dependencies（`-MMD -MP`），並將 warnings、最佳化、平台與 ISA flags 分開管理。AVX2/AVX-512 不設成所有檔案共用的 flags，只編譯 NNUE/runtime 的特定 translation unit 或對應 binary variant，避免通用版本意外執行不支援的指令。
+預設為：
+
+```text
+CONFIG=release
+ARCH=generic
+LTO=1
+```
+
+主要建置命令：
+
+```text
+make
+make build
+make release
+
+make debug
+make sanitize
+make test
+
+make uci
+make perft
+make ttbench
+make datagen
+
+make all-versions
+make clean
+```
+
+`make` / `make build` 會建置目前 `CONFIG` 與 `ARCH` 對應的 UCI 引擎與 perft executable。
+
+Release 產物依架構命名：
+
+```text
+mors-generic.exe
+mors-avx2.exe
+mors-bmi2.exe
+mors-avx2+bmi2.exe
+```
+
+工具與測試 executable 同樣帶有 architecture suffix。
+
+`make all-versions` 依序建置四種 Release architecture variant；recursive make 繼承 GNU Make jobserver，因此：
+
+```text
+make -j4 all-versions
+```
+
+仍可讓每個 variant 內部使用最多四個 parallel jobs，而不讓四個完整建置同時競爭資源。
+
+所有 C++ translation unit 使用：
+
+```text
+-std=c++23
+-Wall
+-Wextra
+-Wpedantic
+-Wconversion
+-Wshadow
+-MMD
+-MP
+```
+
+並固定以 UTF-8 作為 source 與 execution character set。
+
+Release：
+
+```text
+-O3
+-DNDEBUG
+```
+
+預設啟用：
+
+```text
+-flto=auto
+```
+
+可用 `LTO=0` 關閉。
+
+Windows Release executable 靜態連結 GCC / MinGW runtime：
+
+```text
+-static
+-static-libgcc
+-static-libstdc++
+-Wl,--gc-sections
+```
+
+避免發行 binary 額外依賴 `libstdc++-6.dll`、`libgcc_s_seh-1.dll` 或 `libwinpthread-1.dll`；正常 Windows system DLL 不受影響。
+
+Debug：
+
+```text
+-Og
+-g3
+```
+
+不使用 LTO。
+
+Sanitize：
+
+```text
+-O1
+-g3
+-fsanitize=address
+-fsanitize=undefined
+-fno-omit-frame-pointer
+```
+
+同樣不使用 LTO。
+
+目前 ISA variant：
+
+```text
+ARCH=generic
+    無 optional ISA requirement
+    MORS_MAGIC
+
+ARCH=avx2
+    -mavx2
+    MORS_DUAL_HQ
+
+ARCH=bmi2
+    -mbmi2
+    MORS_PEXT
+
+ARCH=avx2+bmi2
+    -mavx2 -mbmi2
+    MORS_PEXT
+```
+
+因此目前不存在舊設計中的 `ARCH=hybrid` 或 `make native`。
+
+`generic` 使用 Magic sliding attacks；`avx2` 使用 Dual Hyperbola Quintessence；`bmi2` 與 `avx2+bmi2` 使用 PEXT sliding attacks。
+
+Makefile 會拒絕未知的 `ARCH`、`CONFIG` 或非 `0/1` 的 `LTO`，避免靜默產生錯誤建置組態。
 
 ## Engine 外部介面草案
 

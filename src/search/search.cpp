@@ -1264,6 +1264,10 @@ SearchResult search(
         result.best_move = result.pv_length != 0
             ? result.principal_variation[0]
             : Move{};
+        result.stats = context.stats;
+
+        if (limits.iteration_callback)
+            limits.iteration_callback(result);
 
         if (limits.soft_time.count() > 0
             && std::chrono::steady_clock::now() >= context.soft_deadline) {

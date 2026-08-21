@@ -4,6 +4,7 @@
 
 #include "chess/movegen.hpp"
 #include "eval/nnue/network.hpp"
+#include "eval/nnue/wdl.hpp"
 #include "eval/nnue/worker.hpp"
 #include "search/score.hpp"
 
@@ -18,9 +19,9 @@ using namespace mors;
 
 [[nodiscard]] std::filesystem::path network_path() {
     constexpr std::array<std::string_view, 3> CANDIDATES{
-        "../networks/mors-p2h32.nnue",
-        "networks/mors-p2h32.nnue",
-        "../../networks/mors-p2h32.nnue"
+        "../networks/mors-p2h32-s14400M-o3183M-c+frc.mnue",
+        "networks/mors-p2h32-s14400M-o3183M-c+frc.mnue",
+        "../../networks/mors-p2h32-s14400M-o3183M-c+frc.mnue"
     };
     for (const std::string_view candidate : CANDIDATES) {
         std::error_code error;
@@ -43,17 +44,18 @@ struct Golden final {
 
 bool test_golden(const nnue::Network& network) {
     constexpr std::array<Golden, 5> CASES{{
-        {START_FEN, 19},
+        {START_FEN, 63},
         {
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10",
-            -185
+            -93
         },
-        {"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 227},
-        {"r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 224},
-        {"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", -64}
+        {"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", -43},
+        {"r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", -505},
+        {"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 350}
     }};
 
     nnue::Worker worker;
+    bool passed = true;
     for (const Golden& test : CASES) {
         auto parsed = Position::from_fen(test.fen);
         if (!expect(parsed.has_value(), "golden FEN must parse"))
@@ -62,17 +64,23 @@ bool test_golden(const nnue::Network& network) {
         worker.reset();
         const Value reference = nnue::evaluate_reference(*parsed, network);
         const Value incremental = worker.evaluate(*parsed, network);
-        if (!expect(is_eval_value(reference), "reference output must remain an ordinary value")
-            || !expect(is_eval_value(incremental), "worker output must remain an ordinary value")
-            || !expect(reference == test.expected, "reference must match MagnusChessX golden")
-            || !expect(incremental == reference, "worker must match reference at root")) {
+        const bool current =
+               expect(is_eval_value(reference),
+                      "reference output must remain an ordinary value")
+            && expect(is_eval_value(incremental),
+                      "worker output must remain an ordinary value")
+            && expect(reference == test.expected,
+                      "reference must match MagnusChessX golden")
+            && expect(incremental == reference,
+                      "worker must match reference at root");
+        if (!current) {
             std::cerr << "  fen: " << test.fen << " expected " << test.expected
                       << " reference " << reference
                       << " worker " << incremental << '\n';
-            return false;
+            passed = false;
         }
     }
-    return true;
+    return passed;
 }
 
 bool test_incremental_moves(const nnue::Network& network) {
@@ -265,11 +273,38 @@ bool test_mirror_cache(const nnue::Network& network) {
     return true;
 }
 
+bool test_wdl_model() {
+    auto parsed = Position::from_fen(START_FEN);
+    if (!expect(parsed.has_value(), "WDL start position must parse"))
+        return false;
+
+    const nnue::WdlTriplet draw = nnue::score_to_wdl(0, *parsed);
+    const nnue::WdlTriplet positive = nnue::score_to_wdl(116, *parsed);
+    const nnue::WdlTriplet negative = nnue::score_to_wdl(-116, *parsed);
+    const nnue::WdlTriplet win = nnue::score_to_wdl(VALUE_MATE, *parsed);
+    const nnue::WdlTriplet loss = nnue::score_to_wdl(-VALUE_MATE, *parsed);
+
+    return expect(nnue::score_to_cp(116, *parsed) == 100,
+                  "full-material P2-H32 cp calibration")
+        && expect(draw.win + draw.draw + draw.loss == 1'000,
+                  "draw WDL must sum to 1000")
+        && expect(positive.win + positive.draw + positive.loss == 1'000,
+                  "positive WDL must sum to 1000")
+        && expect(positive.win == negative.loss
+                      && positive.draw == negative.draw
+                      && positive.loss == negative.win,
+                  "ordinary WDL must be score-symmetric")
+        && expect(win.win == 1'000 && win.draw == 0 && win.loss == 0,
+                  "decisive win WDL")
+        && expect(loss.win == 0 && loss.draw == 0 && loss.loss == 1'000,
+                  "decisive loss WDL");
+}
+
 } // namespace
 
 bool run_nnue_tests() {
     const std::filesystem::path path = network_path();
-    if (!expect(!path.empty(), "mors-p2h32.nnue must be available"))
+    if (!expect(!path.empty(), "mors-p2h32-s14400M-o3183M-c+frc.mnue must be available"))
         return false;
 
     auto loaded = mors::nnue::Network::load(path);
@@ -288,7 +323,7 @@ bool run_nnue_tests() {
     const bool incremental = golden && test_incremental_moves(*loaded);
     const bool line = incremental && test_incremental_line(*loaded);
     const bool lazy = line && test_lazy_incremental_line(*loaded);
-    const bool passed = lazy && test_mirror_cache(*loaded);
+    const bool passed = lazy && test_mirror_cache(*loaded) && test_wdl_model();
 
     if (passed)
         std::cout << "PASS nnue p2-h32 (" << mors::nnue::worker_backend() << ")\n";

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 
@@ -22,6 +23,8 @@ class TranspositionTable;
 namespace nnue {
 class Network;
 }
+
+struct SearchResult;
 
 struct SearchLimits final {
     Depth max_depth = 1;
@@ -38,6 +41,10 @@ struct SearchLimits final {
     std::chrono::steady_clock::time_point start_time{};
     std::chrono::milliseconds soft_time{};
     std::chrono::milliseconds hard_time{};
+
+    // Called synchronously after each fully completed iterative-deepening
+    // depth. An interrupted partial iteration is never reported.
+    std::function<void(const SearchResult&)> iteration_callback{};
 };
 
 struct SearchStats final {

@@ -1,7 +1,7 @@
 version = 1
 
 [artifact]
-deployed_file = "mors-p2h32.nnue"
+deployed_file = "mors-p2h32-s14400M-o3183M-c+frc.mnue"
 source_file = "mors-p2h32-s14400M-o3183M-c+frc-200.mnue"
 sha256 = "F9A996768AE627666718C9F88F4E604D1CA0723D03CFC63E134E18DD082E0D57"
 bytes = 27527336

@@ -164,6 +164,7 @@ bool run_nnue_tests();
 bool run_search_tests();
 bool run_time_tests();
 bool run_uci_tests();
+bool run_datagen_tests();
 
 int main() {
     mors::initialize_attacks();
@@ -210,6 +211,7 @@ int main() {
     passed &= run_search_tests();
     passed &= run_time_tests();
     passed &= run_uci_tests();
+    passed &= run_datagen_tests();
     passed &= run_movegen_cross_checks();
     for (const PerftCase& test : CASES)
         passed &= run_case(test);

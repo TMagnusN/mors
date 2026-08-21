@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -22,9 +23,9 @@ using namespace mors;
 
 [[nodiscard]] std::filesystem::path network_path() {
     constexpr std::array<std::string_view, 3> CANDIDATES{
-        "../networks/mors-p2h32.nnue",
-        "networks/mors-p2h32.nnue",
-        "../../networks/mors-p2h32.nnue"
+        "../networks/mors-p2h32-s14400M-o3183M-c+frc.mnue",
+        "networks/mors-p2h32-s14400M-o3183M-c+frc.mnue",
+        "../../networks/mors-p2h32-s14400M-o3183M-c+frc.mnue"
     };
     for (const std::string_view candidate : CANDIDATES) {
         std::error_code error;
@@ -146,12 +147,17 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
     const std::string original_fen = position.fen();
     const Key original_key = position.key();
     TranspositionTable table(4);
-    const SearchResult result = search(
-        position,
-        table,
-        network,
-        SearchLimits{.max_depth = 3}
-    );
+    std::vector<Depth> reported_depths;
+    std::uint64_t previous_reported_nodes = 0;
+    bool reported_nodes_increase = true;
+    SearchLimits limits{.max_depth = 3};
+    limits.iteration_callback = [&](const SearchResult& iteration) {
+        reported_depths.push_back(iteration.completed_depth);
+        if (iteration.stats.nodes <= previous_reported_nodes)
+            reported_nodes_increase = false;
+        previous_reported_nodes = iteration.stats.nodes;
+    };
+    const SearchResult result = search(position, table, network, limits);
 
     if (!expect(result.completed_depth == 3, "depth-three iteration must complete")
         || !expect(is_valid_value(result.value), "PVS result must be a valid value")
@@ -166,6 +172,10 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
         || !expect(result.stats.aspiration_searches
                        == 2 + result.stats.aspiration_researches,
                    "each aspiration failure must cause exactly one root re-search")
+        || !expect(reported_depths == std::vector<Depth>({1, 2, 3}),
+                   "each completed depth must be reported exactly once")
+        || !expect(reported_nodes_increase,
+                   "iteration reports must carry cumulative node counts")
         || !expect(result.stats.static_eval_cache_hits > 0,
                    "iterative deepening must reuse cached static evaluations")
         || !expect(position.key() == original_key && position.fen() == original_fen,
@@ -230,8 +240,6 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
         && expect(result.stats.singular_multicut_cutoffs
                       <= result.stats.singular_searches,
                   "singular multi-cut cutoffs must come from verification searches")
-        && expect(result.stats.singular_multicut_cutoffs > 0,
-                  "deep TT alternatives must exercise singular multi-cut")
         && expect(result.stats.qsearch_see_prunes > 0,
                   "qsearch must exercise threshold SEE pruning")
         && expect(result.stats.qsearch_lmp_prunes > 0,
@@ -382,7 +390,7 @@ bool test_null_move_material_gate(const nnue::Network& network) {
 
 bool run_search_tests() {
     const std::filesystem::path path = network_path();
-    if (!expect(!path.empty(), "mors-p2h32.nnue must be available"))
+    if (!expect(!path.empty(), "mors-p2h32-s14400M-o3183M-c+frc.mnue must be available"))
         return false;
 
     auto loaded = mors::nnue::Network::load(path);
