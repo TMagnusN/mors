@@ -166,6 +166,9 @@ LDFLAGS := $(LINK_FLAGS)
 WINDOWS_RESOURCE_SOURCE := $(PROJECT_ROOT)/resources/windows/mors.rc
 WINDOWS_ICON_SOURCE := $(PROJECT_ROOT)/resources/windows/mors.ico
 WINDOWS_RESOURCE_OBJECT := $(OBJ_DIR)/resources/mors-icon.o
+DEFAULT_NETWORK_SOURCE := $(PROJECT_ROOT)/networks/mors-p2h32-s14400M-o3183M-c+frc.mnue
+DEFAULT_NETWORK_PROVENANCE := $(PROJECT_ROOT)/networks/mors-p2h32.provenance.toml
+NETWORK_VERIFICATION_STAMP := $(OBJ_DIR)/resources/mors-network-verified.stamp
 
 # ---------------------------------------------------------------------------
 # Sources
@@ -246,6 +249,7 @@ DEPENDENCIES := \
     ttbench \
     ttbench-run \
     datagen \
+    verify-net \
     clean
 
 # Normal build:
@@ -304,6 +308,8 @@ ttbench-run: $(TT_BENCH_TARGET)
 
 datagen: $(DATAGEN_TARGET)
 
+verify-net: $(NETWORK_VERIFICATION_STAMP)
+
 # ---------------------------------------------------------------------------
 # Linking
 # ---------------------------------------------------------------------------
@@ -332,6 +338,28 @@ $(DATAGEN_TARGET): $(CORE_OBJECTS) $(DATAGEN_OBJECT)
 # Compilation
 # ---------------------------------------------------------------------------
 
+
+$(NETWORK_VERIFICATION_STAMP): $(DEFAULT_NETWORK_SOURCE) $(DEFAULT_NETWORK_PROVENANCE)
+	mkdir -p "$(@D)"
+	expected_sha="$$(sed -n 's/^sha256 = "\(.*\)"/\1/p' "$(DEFAULT_NETWORK_PROVENANCE)")"; \
+	expected_bytes="$$(sed -n 's/^bytes = //p' "$(DEFAULT_NETWORK_PROVENANCE)")"; \
+	actual_sha="$$(sha256sum "$(DEFAULT_NETWORK_SOURCE)" | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]')"; \
+	actual_bytes="$$(wc -c < "$(DEFAULT_NETWORK_SOURCE)")"; \
+	if [[ -z "$$expected_sha" || -z "$$expected_bytes" ]]; then \
+	    echo "Missing NNUE sha256/bytes in $(DEFAULT_NETWORK_PROVENANCE)" >&2; \
+	    exit 1; \
+	fi; \
+	if [[ "$$actual_sha" != "$$expected_sha" ]]; then \
+	    echo "NNUE SHA-256 mismatch: expected $$expected_sha, got $$actual_sha" >&2; \
+	    exit 1; \
+	fi; \
+	if [[ "$$actual_bytes" != "$$expected_bytes" ]]; then \
+	    echo "NNUE size mismatch: expected $$expected_bytes, got $$actual_bytes" >&2; \
+	    exit 1; \
+	fi
+	touch "$@"
+
+$(UCI_OBJECT): $(DEFAULT_NETWORK_SOURCE) $(NETWORK_VERIFICATION_STAMP)
 
 $(WINDOWS_RESOURCE_OBJECT): $(WINDOWS_RESOURCE_SOURCE) $(WINDOWS_ICON_SOURCE)
 	mkdir -p "$(@D)"

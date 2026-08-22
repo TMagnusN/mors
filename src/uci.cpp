@@ -18,13 +18,16 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <iostream>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -33,61 +36,40 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
+extern "C" {
+extern const unsigned char gMorsDefaultNetworkData[];
+extern const unsigned char gMorsDefaultNetworkEnd[];
+}
+
+__asm__(
+    ".section .rodata\n"
+    ".global gMorsDefaultNetworkData\n"
+    ".balign 64\n"
+    "gMorsDefaultNetworkData:\n"
+    ".incbin \"../networks/mors-p2h32-s14400M-o3183M-c+frc.mnue\"\n"
+    ".global gMorsDefaultNetworkEnd\n"
+    ".balign 1\n"
+    "gMorsDefaultNetworkEnd:\n"
+    ".text\n"
+);
 
 namespace mors {
 namespace {
 
-[[nodiscard]] std::filesystem::path executable_directory() {
-#if defined(_WIN32)
-    // Windows long paths are limited to 32,767 UTF-16 code units.
-    std::array<wchar_t, 32'768> buffer{};
-    const DWORD length = GetModuleFileNameW(
-        nullptr,
-        buffer.data(),
-        static_cast<DWORD>(buffer.size())
-    );
-    if (length == 0 || length >= buffer.size())
-        return {};
-    return std::filesystem::path(
-        std::wstring(buffer.data(), static_cast<std::size_t>(length))
-    ).parent_path();
-#elif defined(__linux__)
-    std::error_code error;
-    const std::filesystem::path executable =
-        std::filesystem::read_symlink("/proc/self/exe", error);
-    return error ? std::filesystem::path{} : executable.parent_path();
-#else
-    return {};
-#endif
-}
+constexpr std::string_view DEFAULT_NETWORK_FILENAME =
+    "mors-p2h32-s14400M-o3183M-c+frc.mnue";
 
-[[nodiscard]] std::filesystem::path find_default_network() {
-    const std::filesystem::path directory = executable_directory();
-    const std::filesystem::path filename = "mors-p2h32-s14400M-o3183M-c+frc.mnue";
-    const std::array<std::filesystem::path, 7> candidates{
-        directory / filename,
-        directory / "networks" / filename,
-        directory / ".." / "networks" / filename,
-        directory / ".." / ".." / "networks" / filename,
-        std::filesystem::path("networks") / filename,
-        std::filesystem::path("../networks") / filename,
-        std::filesystem::path("../../networks") / filename
+[[nodiscard]] std::expected<nnue::Network, std::string> load_default_network() {
+    const std::span bytes{
+        reinterpret_cast<const std::byte*>(gMorsDefaultNetworkData),
+        static_cast<std::size_t>(
+            gMorsDefaultNetworkEnd - gMorsDefaultNetworkData
+        )
     };
-    for (const std::filesystem::path& candidate : candidates) {
-        std::error_code error;
-        if (std::filesystem::is_regular_file(candidate, error) && !error)
-            return candidate;
-    }
-    return {};
+    return nnue::Network::load(
+        bytes,
+        std::filesystem::path("<internal>")
+    );
 }
 
 template<typename Integer>
@@ -230,7 +212,7 @@ public:
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
                      << "option name Clear Hash type button\n"
-                     << "option name EvalFile type string default mors-p2h32-s14400M-o3183M-c+frc.mnue" << "\n"
+                     << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
                      << "option name Move Overhead type spin default "
                      << timeman::DEFAULT_MOVE_OVERHEAD_MS
                      << " min " << timeman::MIN_MOVE_OVERHEAD_MS
@@ -338,9 +320,10 @@ private:
         }
 
         if (name == "EvalFile") {
-            auto loaded = nnue::Network::load(
-                std::filesystem::path(value_text)
-            );
+            auto loaded =
+                value_text.empty() || value_text == DEFAULT_NETWORK_FILENAME
+                ? load_default_network()
+                : nnue::Network::load(std::filesystem::path(value_text));
             if (!loaded) {
                 emit(output, "info string EvalFile load failed: "
                            + loaded.error() + "\n");
@@ -523,6 +506,33 @@ private:
             return;
         }
 
+        const unsigned processor_count = std::thread::hardware_concurrency();
+        const unsigned last_processor =
+            processor_count == 0 ? 0 : processor_count - 1;
+        const std::filesystem::path& network_source = network_.source();
+        std::string network_name =
+            network_source == std::filesystem::path("<internal>")
+            ? std::string(DEFAULT_NETWORK_FILENAME)
+            : network_source.filename().string();
+        if (network_name.empty())
+            network_name = network_source.string();
+
+        constexpr std::size_t MEBIBYTE = 1U << 20;
+        const std::size_t network_mib = network_.memory_bytes() / MEBIBYTE;
+        std::ostringstream configuration;
+        configuration
+            << "info string Available processors: 0-" << last_processor << '\n'
+            << "info string Using 1 thread\n"
+            << "info string NNUE evaluation using " << network_name
+            << " (" << network_mib << "MiB, P2-H32 ("
+            << nnue::P2H32::COARSE_INPUTS << "->"
+            << nnue::P2H32::COARSE_WIDTH << ", "
+            << nnue::P2H32::FINE_INPUTS << "->"
+            << nnue::P2H32::FINE_WIDTH << ", "
+            << nnue::P2H32::OUTPUT_BUCKETS << "))\n"
+            << "info string Network replica 1: Local memory.\n";
+        emit(output, configuration.str());
+
         MoveList legal_moves;
         generate_legal(position_, legal_moves);
         const Move fallback = legal_moves.empty() ? Move{} : legal_moves[0];
@@ -637,13 +647,7 @@ private:
 int run_uci(std::istream& input, std::ostream& output) {
     initialize_attacks();
 
-    const std::filesystem::path path = find_default_network();
-    if (path.empty()) {
-        output << "info string NNUE network not found: mors-p2h32-s14400M-o3183M-c+frc.mnue\n";
-        return 1;
-    }
-
-    auto loaded = nnue::Network::load(path);
+    auto loaded = load_default_network();
     if (!loaded) {
         output << "info string NNUE load failed: " << loaded.error() << '\n';
         return 1;

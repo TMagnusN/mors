@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <iosfwd>
 #include <memory>
 #include <span>
 #include <string>
@@ -69,6 +70,10 @@ public:
     [[nodiscard]] static std::expected<Network, std::string> load(
         const std::filesystem::path& path
     );
+    [[nodiscard]] static std::expected<Network, std::string> load(
+        std::span<const std::byte> bytes,
+        std::filesystem::path source
+    );
 
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] std::int32_t scale() const noexcept;
@@ -84,6 +89,12 @@ public:
 
 private:
     struct Impl;
+
+    [[nodiscard]] static std::expected<Network, std::string> load(
+        std::istream& input,
+        std::uintmax_t size,
+        std::filesystem::path source
+    );
     std::unique_ptr<Impl> impl_;
 };
 

@@ -8,8 +8,10 @@
 #include <bit>
 #include <cstdint>
 #include <fstream>
+#include <istream>
 #include <limits>
 #include <new>
+#include <streambuf>
 #include <utility>
 
 namespace mors::nnue {
@@ -77,7 +79,7 @@ private:
     return std::bit_cast<std::int32_t>(read_u32_le(bytes, offset));
 }
 
-[[nodiscard]] bool read_buffer(std::ifstream& input, AlignedI16Buffer& buffer) {
+[[nodiscard]] bool read_buffer(std::istream& input, AlignedI16Buffer& buffer) {
     static_assert(sizeof(std::int16_t) == 2);
     const std::size_t bytes = buffer.size() * sizeof(std::int16_t);
     if (bytes > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
@@ -95,6 +97,16 @@ private:
     }
     return true;
 }
+
+class MemoryBuffer final : public std::streambuf {
+public:
+    explicit MemoryBuffer(std::span<const std::byte> bytes) {
+        char* const begin = const_cast<char*>(
+            reinterpret_cast<const char*>(bytes.data())
+        );
+        setg(begin, begin, begin + bytes.size());
+    }
+};
 
 } // namespace
 
@@ -120,20 +132,37 @@ std::expected<Network, std::string> Network::load(const std::filesystem::path& p
     if (error)
         return std::unexpected("cannot determine NNUE file size: " + path.string());
 
-    const bool raw_payload = file_size == P2H32::PAYLOAD_BYTES;
-    const bool headered = file_size == P2H32::PAYLOAD_BYTES + P2H32::HEADER_BYTES;
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return std::unexpected("cannot open NNUE file: " + path.string());
+
+    return load(input, file_size, path);
+}
+
+std::expected<Network, std::string> Network::load(
+    std::span<const std::byte> bytes,
+    std::filesystem::path source
+) {
+    MemoryBuffer buffer(bytes);
+    std::istream input(&buffer);
+    return load(input, bytes.size(), std::move(source));
+}
+
+std::expected<Network, std::string> Network::load(
+    std::istream& input,
+    std::uintmax_t size,
+    std::filesystem::path source
+) {
+    const bool raw_payload = size == P2H32::PAYLOAD_BYTES;
+    const bool headered = size == P2H32::PAYLOAD_BYTES + P2H32::HEADER_BYTES;
     if (!raw_payload && !headered) {
         return std::unexpected(
             "invalid P2-H32 file size: expected "
             + std::to_string(P2H32::PAYLOAD_BYTES) + " or "
             + std::to_string(P2H32::PAYLOAD_BYTES + P2H32::HEADER_BYTES)
-            + " bytes, got " + std::to_string(file_size)
+            + " bytes, got " + std::to_string(size)
         );
     }
-
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return std::unexpected("cannot open NNUE file: " + path.string());
 
     std::int32_t scale = P2H32::DEFAULT_SCALE;
     if (headered) {
@@ -164,7 +193,7 @@ std::expected<Network, std::string> Network::load(const std::filesystem::path& p
 
     Network network;
     network.impl_ = std::make_unique<Impl>();
-    network.impl_->source = path;
+    network.impl_->source = std::move(source);
     network.impl_->scale = scale;
 
     if (!read_buffer(input, network.impl_->coarse_weights)

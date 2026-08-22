@@ -77,6 +77,8 @@ bool run_uci_tests() {
              << "setoption name Hash value 2\n"
              << "setoption name Clear Hash\n"
              << "setoption name EvalFile value " << network.string() << "\n"
+             << "setoption name EvalFile value mors-p2h32-s14400M-o3183M-c+frc.mnue\n"
+             << "setoption name EvalFile value __missing_mors_network__.mnue\n"
              << "setoption name Move Overhead value 25\n"
              << "position startpos moves e2e4 e7e5 g1f3\n"
              << "d\n"
@@ -106,8 +108,28 @@ bool run_uci_tests() {
                            "time safety option must be advertised")
         && expect_contains(text, "option name EvalFile type string",
                            "network path option must be advertised")
+        && expect_contains(text, "info string Available processors: 0-",
+                           "go must report available processors")
+        && expect_contains(text, "info string Using 1 thread\n",
+                           "go must report the active thread count")
+        && expect_contains(
+               text,
+               "info string NNUE evaluation using mors-p2h32-s14400M-o3183M-c+frc.mnue "
+               "(26MiB, P2-H32 (10240->768, 22528->256, 64))\n",
+               "go must report the active NNUE architecture"
+           )
+        && expect_contains(text, "info string Network replica 1: Local memory.\n",
+                           "go must report the network replica")
+        && expect(
+               text.find("info string Using 1 thread\n") < text.find("info depth 1 "),
+               "search configuration must precede depth output"
+           )
         && expect_contains(text, "info string EvalFile loaded:",
                            "EvalFile must load a replacement network")
+        && expect_contains(text, "info string EvalFile loaded: <internal>\n",
+                           "default EvalFile must restore the embedded network")
+        && expect_contains(text, "info string EvalFile load failed:",
+                           "invalid EvalFile must report an error")
         && expect_contains(text, "info string fen rnbqkbnr/pppp1ppp/",
                            "position moves must update the board")
         && expect_contains(text, "bestmove ", "search must emit bestmove")
