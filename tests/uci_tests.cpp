@@ -82,6 +82,10 @@ bool run_uci_tests() {
              << "setoption name Move Overhead value 25\n"
              << "position startpos moves e2e4 e7e5 g1f3\n"
              << "d\n"
+             << "position fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n"
+             << "d\n"
+             << "position fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - moves f6e4\n"
+             << "d\n"
              << "go movetime 20\n"
              << "stop\n"
              << "position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\n"
@@ -132,6 +136,16 @@ bool run_uci_tests() {
                            "invalid EvalFile must report an error")
         && expect_contains(text, "info string fen rnbqkbnr/pppp1ppp/",
                            "position moves must update the board")
+        && expect_contains(
+               text,
+               "info string fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n",
+               "complete six-field FEN must be accepted"
+           )
+        && expect_contains(
+               text,
+               "info string fen rnbqkb1r/pp2pppp/3p4/8/3Nn3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 2\n",
+               "four-field FEN followed by moves must be accepted"
+           )
         && expect_contains(text, "bestmove ", "search must emit bestmove")
         && expect_not_contains(text, "search busy",
                                "stop must join before the next command")

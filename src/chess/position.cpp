@@ -5,6 +5,7 @@
 #include "position.hpp"
 #include "zobrist.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include <sstream>
@@ -65,10 +66,17 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
     std::string fullmove_field;
     std::string trailing;
 
-    if (!(stream >> board_field >> side_field >> castling_field
-                 >> ep_field >> halfmove_field >> fullmove_field)
-        || (stream >> trailing)) {
-        return std::unexpected("FEN must contain exactly six fields");
+    // The first four fields describe the actual position. Like Stockfish,
+    // accept FEN/EPD input without the two move counters; GUIs and opening
+    // tools commonly omit them. Missing counters use their initial values.
+    if (!(stream >> board_field >> side_field >> castling_field >> ep_field))
+        return std::unexpected("FEN must contain at least four fields");
+
+    halfmove_field = "0";
+    fullmove_field = "1";
+    if (stream >> halfmove_field) {
+        if (stream >> fullmove_field && stream >> trailing)
+            return std::unexpected("FEN must contain at most six fields");
     }
 
     Position position;
@@ -138,8 +146,11 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
     unsigned fullmove = 0;
     if (!parse_integer(halfmove_field, halfmove) || halfmove > UINT16_MAX)
         return std::unexpected("invalid halfmove clock");
-    if (!parse_integer(fullmove_field, fullmove) || fullmove == 0 || fullmove > UINT16_MAX)
+    if (!parse_integer(fullmove_field, fullmove) || fullmove > UINT16_MAX)
         return std::unexpected("invalid fullmove number");
+
+    // Stockfish also accepts the common non-standard fullmove value zero.
+    fullmove = std::max(fullmove, 1U);
 
     position.halfmove_clock_ = std::uint16_t(halfmove);
     position.fullmove_number_ = std::uint16_t(fullmove);

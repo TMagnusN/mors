@@ -15,7 +15,6 @@
 #include "search/tt.hpp"
 
 #include <atomic>
-#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -385,21 +384,17 @@ private:
 
         std::optional<Position> candidate;
         std::string token;
+        bool has_moves = false;
         if (kind == "startpos") {
             candidate = start_position();
         } else if (kind == "fen") {
-            std::array<std::string, 6> fields;
-            for (std::string& field : fields) {
-                if (!(stream >> field)) {
-                    emit(output, "info string incomplete FEN\n");
-                    return;
-                }
+            std::string fen;
+            while (stream >> token && token != "moves") {
+                if (!fen.empty())
+                    fen.push_back(' ');
+                fen += token;
             }
-            std::string fen = fields[0];
-            for (std::size_t index = 1; index < fields.size(); ++index) {
-                fen.push_back(' ');
-                fen += fields[index];
-            }
+            has_moves = token == "moves";
             auto parsed = Position::from_fen(fen);
             if (!parsed) {
                 emit(output, "info string invalid FEN: " + parsed.error() + "\n");
@@ -412,7 +407,7 @@ private:
         }
 
         std::vector<Key> history;
-        if (stream >> token) {
+        if (has_moves || stream >> token) {
             if (token != "moves") {
                 emit(output, "info string expected moves after position\n");
                 return;
