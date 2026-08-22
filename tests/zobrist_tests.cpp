@@ -80,6 +80,56 @@ bool run_zobrist_tests() {
         return false;
     }
 
+    auto dead_ep = Position::from_fen(
+        "8/2p5/1k6/2p1rpKp/P6P/2R1P1P1/P7/8 w - h6 0 40"
+    );
+    auto dead_ep_none = Position::from_fen(
+        "8/2p5/1k6/2p1rpKp/P6P/2R1P1P1/P7/8 w - - 0 40"
+    );
+    auto live_ep = Position::from_fen(
+        "4k3/8/8/6Pp/8/8/8/4K3 w - h6 0 1"
+    );
+    auto live_ep_none = Position::from_fen(
+        "4k3/8/8/6Pp/8/8/8/4K3 w - - 0 1"
+    );
+    if (!dead_ep || !dead_ep_none || !live_ep || !live_ep_none
+        || dead_ep->ep_square() != SQ_NONE
+        || dead_ep->key() != dead_ep_none->key()
+        || live_ep->ep_square() != H6
+        || live_ep->key() == live_ep_none->key()) {
+        std::cerr << "FAIL zobrist: canonical en-passant FEN key semantics\n";
+        return false;
+    }
+
+    auto dead_push = Position::from_fen(
+        "4k3/7p/8/8/8/8/8/4K3 b - - 0 1"
+    );
+    auto live_push = Position::from_fen(
+        "4k3/7p/8/6P1/8/8/8/4K3 b - - 0 1"
+    );
+    if (!dead_push || !live_push) {
+        std::cerr << "FAIL zobrist: en-passant push FENs must parse\n";
+        return false;
+    }
+
+    StateInfo dead_state;
+    dead_push->do_move(Move::normal(H7, H5), dead_state);
+    StateInfo live_state;
+    live_push->do_move(Move::normal(H7, H5), live_state);
+    if (dead_push->ep_square() != SQ_NONE || live_push->ep_square() != H6) {
+        std::cerr << "FAIL zobrist: double push en-passant canonicalization\n";
+        return false;
+    }
+
+    auto dead_rebuilt = Position::from_fen(dead_push->fen());
+    auto live_rebuilt = Position::from_fen(live_push->fen());
+    if (!dead_rebuilt || !live_rebuilt
+        || dead_rebuilt->key() != dead_push->key()
+        || live_rebuilt->key() != live_push->key()) {
+        std::cerr << "FAIL zobrist: canonical en-passant incremental key\n";
+        return false;
+    }
+
     std::cout << "PASS zobrist\n";
     return true;
 }

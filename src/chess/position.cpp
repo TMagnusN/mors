@@ -61,6 +61,30 @@ Bitboard rank_segment(Square first, Square second) noexcept {
     return result;
 }
 
+bool valid_en_passant_square(
+    const Position& position,
+    Square ep_square,
+    Color capturing_color
+) noexcept {
+    if (!is_ok(ep_square) || !is_ok(capturing_color))
+        return false;
+
+    const Rank expected_rank = capturing_color == WHITE ? RANK_6 : RANK_3;
+    if (rank_of(ep_square) != expected_rank)
+        return false;
+
+    const Square captured_square = ep_square - pawn_push(capturing_color);
+    const Square source_square = ep_square + pawn_push(capturing_color);
+    return is_ok(captured_square)
+        && is_ok(source_square)
+        && position.piece_on(ep_square) == NO_PIECE
+        && position.piece_on(source_square) == NO_PIECE
+        && position.piece_on(captured_square)
+            == make_piece(~capturing_color, PAWN)
+        && (pawn_attacks(~capturing_color, ep_square)
+            & position.pieces(capturing_color, PAWN)) != EMPTY_BB;
+}
+
 } // namespace
 
 std::expected<Position, std::string> Position::from_fen(
@@ -185,10 +209,16 @@ std::expected<Position, std::string> Position::from_fen(
             return std::unexpected("invalid en-passant field");
         }
 
-        position.ep_square_ = make_square(
+        const Square candidate = make_square(
             File(ep_field[0] - 'a'),
             Rank(ep_field[1] - '1')
         );
+        if (valid_en_passant_square(
+                position,
+                candidate,
+                position.side_to_move_)) {
+            position.ep_square_ = candidate;
+        }
     }
 
     unsigned halfmove = 0;
@@ -415,8 +445,11 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
     if (type_of(moving_piece) == PAWN) {
         halfmove_clock_ = 0;
         if (int(to) - int(from) == 16 || int(from) - int(to) == 16) {
-            ep_square_ = from + pawn_push(us);
-            key_ ^= zobrist::en_passant(file_of(ep_square_));
+            const Square candidate = from + pawn_push(us);
+            if (valid_en_passant_square(*this, candidate, ~us)) {
+                ep_square_ = candidate;
+                key_ ^= zobrist::en_passant(file_of(ep_square_));
+            }
         }
     }
 
