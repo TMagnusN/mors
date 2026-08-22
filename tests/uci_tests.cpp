@@ -103,11 +103,11 @@ bool run_uci_tests() {
     const bool passed =
            expect_contains(
                text,
-               "MORS 0.0.1-dev by Theodore Magnus Øen and Codex (see AUTHORS file)\n",
+               "MORS 0.0.1-dev by Theodore Magnus Øen & Codex (see AUTHORS file)\n",
                "startup banner must credit both authors"
            )
         && expect_contains(text, "id name MORS 0.0.1-dev\n", "engine id must be emitted")
-        && expect_contains(text, "id author Theodore Magnus Øen and Codex\n",
+        && expect_contains(text, "id author Theodore Magnus Øen & Codex\n",
                            "author id must be emitted")
         && expect_contains(text, "uciok\n", "uci handshake must complete")
         && expect_contains(text, "readyok\n", "readiness handshake must complete")
