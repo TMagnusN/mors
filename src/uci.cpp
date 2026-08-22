@@ -206,7 +206,7 @@ public:
         if (command == "uci") {
             std::ostringstream response;
             response << "id name MORS 0.0.1-dev\n"
-                     << "id author Theodore Magnus Oen\n"
+                     << "id author Theodore Magnus Øen and Codex\n"
                      << "option name Threads type spin default 1 min 1 max 1\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
@@ -640,6 +640,9 @@ private:
 } // namespace
 
 int run_uci(std::istream& input, std::ostream& output) {
+    output << "MORS 0.0.1-dev by Theodore Magnus Øen and Codex "
+              "(see AUTHORS file)\n";
+
     initialize_attacks();
 
     auto loaded = load_default_network();
