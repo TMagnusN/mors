@@ -81,18 +81,6 @@ template<typename Integer>
     return error == std::errc{} && end == text.data() + text.size();
 }
 
-[[nodiscard]] std::optional<Square> parse_square(std::string_view text) noexcept {
-    if (text.size() != 2
-        || text[0] < 'a' || text[0] > 'h'
-        || text[1] < '1' || text[1] > '8') {
-        return std::nullopt;
-    }
-    return make_square(
-        File(text[0] - 'a'),
-        Rank(text[1] - '1')
-    );
-}
-
 [[nodiscard]] char promotion_character(PieceType type) noexcept {
     switch (type) {
     case KNIGHT: return 'n';
@@ -103,26 +91,23 @@ template<typename Integer>
     }
 }
 
-[[nodiscard]] std::optional<PieceType> parse_promotion(char character) noexcept {
-    switch (character) {
-    case 'n': return KNIGHT;
-    case 'b': return BISHOP;
-    case 'r': return ROOK;
-    case 'q': return QUEEN;
-    default:  return std::nullopt;
-    }
-}
-
-[[nodiscard]] std::string move_to_uci(Move move) {
+[[nodiscard]] std::string move_to_uci(Move move, bool chess960) {
     if (move.is_none())
         return "0000";
+
+    Square destination = move.to();
+    if (move.type() == CASTLING && !chess960) {
+        const Color color = rank_of(move.from()) == RANK_1 ? WHITE : BLACK;
+        const bool king_side = file_of(move.to()) > file_of(move.from());
+        destination = castling_king_to(color, king_side);
+    }
 
     std::string text;
     text.reserve(5);
     text.push_back(char('a' + file_of(move.from())));
     text.push_back(char('1' + rank_of(move.from())));
-    text.push_back(char('a' + file_of(move.to())));
-    text.push_back(char('1' + rank_of(move.to())));
+    text.push_back(char('a' + file_of(destination)));
+    text.push_back(char('1' + rank_of(destination)));
     if (move.type() == PROMOTION)
         text.push_back(promotion_character(move.promotion_type()));
     return text;
@@ -130,40 +115,22 @@ template<typename Integer>
 
 [[nodiscard]] std::optional<Move> parse_uci_move(
     Position& position,
-    std::string_view text
+    std::string_view text,
+    bool chess960
 ) {
     if (text.size() != 4 && text.size() != 5)
         return std::nullopt;
 
-    const auto from = parse_square(text.substr(0, 2));
-    const auto to = parse_square(text.substr(2, 2));
-    if (!from || !to)
-        return std::nullopt;
-
-    std::optional<PieceType> promotion;
-    if (text.size() == 5) {
-        promotion = parse_promotion(text[4]);
-        if (!promotion)
-            return std::nullopt;
-    }
-
     MoveList moves;
     generate_legal(position, moves);
-    for (const Move move : moves) {
-        if (move.from() != *from || move.to() != *to)
-            continue;
-        if (move.type() == PROMOTION) {
-            if (promotion && move.promotion_type() == *promotion)
-                return move;
-        } else if (!promotion) {
+    for (const Move move : moves)
+        if (move_to_uci(move, chess960) == text)
             return move;
-        }
-    }
     return std::nullopt;
 }
 
-[[nodiscard]] Position start_position() {
-    auto parsed = Position::from_fen(START_FEN);
+[[nodiscard]] Position start_position(bool chess960 = false) {
+    auto parsed = Position::from_fen(START_FEN, chess960);
     if (!parsed)
         throw std::runtime_error("internal start FEN is invalid");
     return std::move(*parsed);
@@ -211,6 +178,7 @@ public:
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
                      << "option name Clear Hash type button\n"
+                     << "option name UCI_Chess960 type check default false\n"
                      << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
                      << "option name Move Overhead type spin default "
                      << timeman::DEFAULT_MOVE_OVERHEAD_MS
@@ -239,7 +207,7 @@ public:
         }
 
         if (command == "ucinewgame") {
-            position_ = start_position();
+            position_ = start_position(chess960_);
             prior_keys_.clear();
             table_.clear();
             time_manager_.new_game();
@@ -318,6 +286,16 @@ private:
             value_text = value_text.substr(1, value_text.size() - 2);
         }
 
+        if (name == "UCI_Chess960") {
+            if (value_text != "true" && value_text != "false") {
+                emit(output, "info string UCI_Chess960 must be true or false\n");
+                return;
+            }
+            chess960_ = value_text == "true";
+            position_.set_chess960(chess960_);
+            return;
+        }
+
         if (name == "EvalFile") {
             auto loaded =
                 value_text.empty() || value_text == DEFAULT_NETWORK_FILENAME
@@ -386,7 +364,7 @@ private:
         std::string token;
         bool has_moves = false;
         if (kind == "startpos") {
-            candidate = start_position();
+            candidate = start_position(chess960_);
         } else if (kind == "fen") {
             std::string fen;
             while (stream >> token && token != "moves") {
@@ -395,7 +373,7 @@ private:
                 fen += token;
             }
             has_moves = token == "moves";
-            auto parsed = Position::from_fen(fen);
+            auto parsed = Position::from_fen(fen, chess960_);
             if (!parsed) {
                 emit(output, "info string invalid FEN: " + parsed.error() + "\n");
                 return;
@@ -413,7 +391,7 @@ private:
                 return;
             }
             while (stream >> token) {
-                const auto move = parse_uci_move(*candidate, token);
+                const auto move = parse_uci_move(*candidate, token, chess960_);
                 if (!move) {
                     emit(output, "info string illegal move in position: " + token + "\n");
                     return;
@@ -589,7 +567,8 @@ private:
                                     response << ' '
                                              << move_to_uci(
                                                     iteration
-                                                        .principal_variation[index]
+                                                        .principal_variation[index],
+                                                    root.chess960()
                                                 );
                                 }
                                 response << '\n';
@@ -607,13 +586,15 @@ private:
                         const Move best_move = result.best_move.is_none()
                             ? fallback
                             : result.best_move;
-                        response << "bestmove " << move_to_uci(best_move) << '\n';
+                        response << "bestmove "
+                                 << move_to_uci(best_move, root.chess960())
+                                 << '\n';
                         emit(*output, response.str());
                     } catch (const std::exception& error) {
                         emit(*output,
                              "info string search failed: "
                                  + std::string(error.what()) + "\nbestmove "
-                                 + move_to_uci(fallback) + "\n");
+                                 + move_to_uci(fallback, root.chess960()) + "\n");
                     }
                     search_running_.store(false, std::memory_order_release);
                 }
@@ -622,7 +603,7 @@ private:
             search_running_.store(false, std::memory_order_release);
             emit(output, "info string could not start search: "
                        + std::string(error.what()) + "\nbestmove "
-                       + move_to_uci(fallback) + "\n");
+                       + move_to_uci(fallback, position_.chess960()) + "\n");
         }
     }
 
@@ -635,6 +616,7 @@ private:
     std::atomic_bool search_running_{false};
     std::thread search_thread_;
     std::mutex output_mutex_;
+    bool chess960_ = false;
 };
 
 } // namespace

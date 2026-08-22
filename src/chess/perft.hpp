@@ -20,6 +20,6 @@ namespace mors {
     int depth
 );
 
-[[nodiscard]] std::string move_to_uci(Move move);
+[[nodiscard]] std::string move_to_uci(Move move, bool chess960 = false);
 
 } // namespace mors

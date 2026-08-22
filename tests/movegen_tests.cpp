@@ -69,7 +69,8 @@ bool cross_check_legal_moves(mors::Position& position, int depth) {
         const mors::Move move = actual[index];
         const bool is_noisy = move.type() == mors::PROMOTION
                            || move.type() == mors::EN_PASSANT
-                           || position.piece_on(move.to()) != mors::NO_PIECE;
+                           || (move.type() != mors::CASTLING
+                               && position.piece_on(move.to()) != mors::NO_PIECE);
         if (is_noisy)
             expected_noisy_raw[expected_noisy_size++] = move.raw();
     }
@@ -153,9 +154,215 @@ bool run_movegen_cross_checks() {
     return true;
 }
 
+bool expect_chess960(bool condition, const char* message) {
+    if (!condition)
+        std::cerr << "FAIL Chess960: " << message << '\n';
+    return condition;
+}
+
+bool has_castling_move(
+    mors::Position& position,
+    mors::Square king_from,
+    mors::Square rook_from
+) {
+    mors::MoveList moves;
+    mors::generate_legal(position, moves);
+    return std::find(
+        moves.begin(),
+        moves.end(),
+        mors::Move::castling(king_from, rook_from)
+    ) != moves.end();
+}
+
+bool run_chess960_tests() {
+    using namespace mors;
+
+    bool passed = true;
+    auto shredder = Position::from_fen(
+        "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFhf - 0 1",
+        true
+    );
+    passed &= expect_chess960(shredder.has_value(), "Shredder-FEN must parse");
+    if (!shredder)
+        return false;
+    passed &= expect_chess960(
+        shredder->castling_rights() == ANY_CASTLING,
+        "Shredder-FEN rights"
+    );
+    passed &= expect_chess960(
+        shredder->castling_rook_square(WHITE_KING_SIDE) == H1
+            && shredder->castling_rook_square(WHITE_QUEEN_SIDE) == F1
+            && shredder->castling_rook_square(BLACK_KING_SIDE) == H8
+            && shredder->castling_rook_square(BLACK_QUEEN_SIDE) == F8,
+        "dynamic rook origins"
+    );
+    passed &= expect_chess960(
+        shredder->fen() ==
+            "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFhf - 0 1",
+        "Shredder-FEN round trip"
+    );
+
+    auto xfen = Position::from_fen(
+        "nqbnrkrb/pppppppp/8/8/8/8/PPPPPPPP/NQBNRKRB w KQkq - 0 1",
+        true
+    );
+    passed &= expect_chess960(
+        xfen && xfen->castling_rook_square(WHITE_KING_SIDE) == G1
+             && xfen->castling_rook_square(WHITE_QUEEN_SIDE) == E1
+             && xfen->fen().contains(" w GEge "),
+        "X-FEN rook discovery"
+    );
+
+    passed &= expect_chess960(
+        !Position::from_fen("4k3/8/8/8/8/8/8/4K3 w H - 0 1", true),
+        "missing castling rook must be rejected"
+    );
+    passed &= expect_chess960(
+        !Position::from_fen("4k3/8/8/8/8/8/8/4K2R w HH - 0 1", true),
+        "duplicate castling side must be rejected"
+    );
+
+    struct CastleCase final {
+        std::string_view fen;
+        Square king_from;
+        Square rook_from;
+        Square king_to;
+        Square rook_to;
+    };
+    constexpr std::array<CastleCase, 6> CASTLES{{
+        {"4k3/8/8/8/8/8/8/R5KR w AH - 0 1", G1, H1, G1, F1},
+        {"4k3/8/8/8/8/8/8/4KR2 w F - 0 1", E1, F1, G1, F1},
+        {"4k3/8/8/8/8/8/8/4K1R1 w G - 0 1", E1, G1, G1, F1},
+        {"4k3/8/8/8/8/8/8/5K1R w H - 0 1", F1, H1, G1, F1},
+        {"4k3/8/8/8/8/8/8/2RK4 w C - 0 1", D1, C1, C1, D1},
+        {"4k3/8/8/8/8/8/8/3RK3 w D - 0 1", E1, D1, C1, D1}
+    }};
+
+    for (const CastleCase& test : CASTLES) {
+        auto parsed = Position::from_fen(test.fen, true);
+        if (!expect_chess960(parsed.has_value(), "edge castle FEN"))
+            return false;
+        Position& position = *parsed;
+        const std::string before_fen = position.fen();
+        const Key before_key = position.key();
+        const Move move = Move::castling(test.king_from, test.rook_from);
+        passed &= expect_chess960(
+            has_castling_move(position, test.king_from, test.rook_from),
+            "edge castle must be generated"
+        );
+        StateInfo state;
+        position.do_move(move, state);
+        passed &= expect_chess960(
+            position.piece_on(test.king_to) == W_KING
+                && position.piece_on(test.rook_to) == W_ROOK
+                && position.castling_rights() == NO_CASTLING
+                && position.is_consistent(),
+            "edge castle make"
+        );
+        position.undo_move(move, state);
+        passed &= expect_chess960(
+            position.fen() == before_fen
+                && position.key() == before_key
+                && position.is_consistent(),
+            "edge castle unmake"
+        );
+    }
+
+    auto rook_blocker =
+        Position::from_fen("4k3/8/8/8/8/8/8/rR4K1 w B - 0 1", true);
+    passed &= expect_chess960(
+        rook_blocker && !has_castling_move(*rook_blocker, G1, B1),
+        "rook movement must not expose the king"
+    );
+
+    auto dynamic_rights =
+        Position::from_fen("4k3/8/8/8/8/8/8/1R2K1R1 w BG - 0 1", true);
+    if (!expect_chess960(dynamic_rights.has_value(), "dynamic rights FEN"))
+        return false;
+    const std::string rights_fen = dynamic_rights->fen();
+    const Key rights_key = dynamic_rights->key();
+    StateInfo rights_state;
+    dynamic_rights->do_move(Move::normal(G1, G2), rights_state);
+    passed &= expect_chess960(
+        dynamic_rights->castling_rights() == WHITE_QUEEN_SIDE
+            && dynamic_rights->is_consistent(),
+        "moving a dynamic rook must clear only its right"
+    );
+    dynamic_rights->undo_move(Move::normal(G1, G2), rights_state);
+    passed &= expect_chess960(
+        dynamic_rights->fen() == rights_fen
+            && dynamic_rights->key() == rights_key,
+        "dynamic rook right must restore on unmake"
+    );
+
+    auto captured_right =
+        Position::from_fen("1r2k3/8/8/8/8/8/8/1R2K1R1 b BG - 0 1", true);
+    if (!expect_chess960(captured_right.has_value(), "captured right FEN"))
+        return false;
+    StateInfo capture_state;
+    captured_right->do_move(Move::normal(B8, B1), capture_state);
+    passed &= expect_chess960(
+        captured_right->castling_rights() == WHITE_KING_SIDE
+            && captured_right->is_consistent(),
+        "capturing a dynamic rook must clear its right"
+    );
+    captured_right->undo_move(Move::normal(B8, B1), capture_state);
+
+    auto black_stationary =
+        Position::from_fen("r5kr/8/8/8/8/8/8/4K3 b ah - 0 1", true);
+    passed &= expect_chess960(
+        black_stationary && has_castling_move(*black_stationary, G8, H8),
+        "black stationary-king castle must be generated"
+    );
+
+
+    auto first_rook =
+        Position::from_fen("4k3/8/8/8/8/8/8/4KR1R w F - 0 1", true);
+    auto second_rook =
+        Position::from_fen("4k3/8/8/8/8/8/8/4KR1R w H - 0 1", true);
+    passed &= expect_chess960(
+        first_rook && second_rook && first_rook->key() != second_rook->key(),
+        "Zobrist key must include the castling rook origin"
+    );
+
+    const auto expect_perft = [&passed](
+        std::string_view fen,
+        bool chess960,
+        int depth,
+        std::uint64_t expected,
+        const char* message
+    ) {
+        auto parsed = Position::from_fen(fen, chess960);
+        const bool current = parsed && perft(*parsed, depth) == expected;
+        passed &= expect_chess960(current, message);
+    };
+    expect_perft(
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        false, 4, 314'346, "classical castling perft d4"
+    );
+    expect_perft(
+        "4k3/8/8/8/8/8/8/R5KR w AH - 0 1",
+        true, 4, 16'219, "stationary-king perft d4"
+    );
+    expect_perft(
+        "4k3/8/8/8/8/8/8/2RK4 w C - 0 1",
+        true, 4, 6'173, "king-rook-swap perft d4"
+    );
+    expect_perft(
+        "nqbnrkrb/pppppppp/8/8/8/8/PPPPPPPP/NQBNRKRB w KQkq - 0 1",
+        true, 3, 8'934, "X-FEN benchmark perft d3"
+    );
+
+    if (passed)
+        std::cout << "PASS Chess960 compatibility\n";
+    return passed;
+}
+
+
 } // namespace
 
 bool run_attacks_tests();
+
 bool run_zobrist_tests();
 bool run_score_tests();
 bool run_see_tests();
@@ -212,6 +419,7 @@ int main() {
     passed &= run_time_tests();
     passed &= run_uci_tests();
     passed &= run_datagen_tests();
+    passed &= run_chess960_tests();
     passed &= run_movegen_cross_checks();
     for (const PerftCase& test : CASES)
         passed &= run_case(test);

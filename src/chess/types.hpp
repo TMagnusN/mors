@@ -305,6 +305,32 @@ constexpr CastlingRights& operator|=(CastlingRights& lhs, CastlingRights rhs) no
     return lhs = lhs | rhs;
 }
 
+[[nodiscard]] constexpr CastlingRights castling_right(
+    Color color,
+    bool king_side
+) noexcept {
+    assert(is_ok(color));
+    if (color == WHITE)
+        return king_side ? WHITE_KING_SIDE : WHITE_QUEEN_SIDE;
+    return king_side ? BLACK_KING_SIDE : BLACK_QUEEN_SIDE;
+}
+
+[[nodiscard]] constexpr Square castling_king_to(
+    Color color,
+    bool king_side
+) noexcept {
+    assert(is_ok(color));
+    return relative_square(color, king_side ? G1 : C1);
+}
+
+[[nodiscard]] constexpr Square castling_rook_to(
+    Color color,
+    bool king_side
+) noexcept {
+    assert(is_ok(color));
+    return relative_square(color, king_side ? F1 : D1);
+}
+
 
 // ============================================================================
 // Sanity

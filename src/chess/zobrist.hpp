@@ -18,6 +18,7 @@ struct Tables final {
     std::array<std::array<Key, SQUARE_NB>, PIECE_NB> piece_square{};
     std::array<Key, FILE_NB> en_passant{};
     std::array<Key, CASTLING_RIGHT_NB> castling{};
+    std::array<std::array<Key, FILE_NB>, CASTLING_RIGHT_NB> castling_rook{};
     Key side = 0;
 };
 
@@ -36,6 +37,13 @@ extern const Tables KEYS;
 [[nodiscard]] inline Key castling(CastlingRights rights) noexcept {
     assert(std::uint8_t(rights) < CASTLING_RIGHT_NB);
     return KEYS.castling[std::uint8_t(rights)];
+}
+
+[[nodiscard]] inline Key castling_rook(CastlingRights right, File file) noexcept {
+    assert(right == WHITE_KING_SIDE || right == WHITE_QUEEN_SIDE
+        || right == BLACK_KING_SIDE || right == BLACK_QUEEN_SIDE);
+    assert(is_ok(file));
+    return KEYS.castling_rook[std::uint8_t(right)][file];
 }
 
 [[nodiscard]] inline Key side() noexcept {

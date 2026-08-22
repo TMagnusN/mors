@@ -43,6 +43,10 @@ private:
     for (Key& key : tables.castling)
         key = random.next();
 
+    for (auto& right : tables.castling_rook)
+        for (Key& key : right)
+            key = random.next();
+
     tables.side = random.next();
     return tables;
 }

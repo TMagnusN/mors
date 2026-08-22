@@ -15,7 +15,7 @@
 
 **MORS** 是由 [Theodore Magnus Øen & Codex](AUTHORS) 獨立實作、持續開發中的 C++23 西洋棋引擎。MORS 透過[通用西洋棋介面（UCI）][uci-link]通訊，因此既能在終端機中使用，也能安裝到支援 UCI 的西洋棋圖形介面。
 
-目前的開發版本為 **MORS 0.0.1-dev**。現階段 MORS 以標準西洋棋為目標，並刻意維持單搜尋執行緒，先讓搜尋、評估與引擎基礎設施成熟。
+目前的開發版本為 **MORS 0.0.1-dev**。MORS 支援標準西洋棋與 Chess960，並刻意維持單搜尋執行緒，先讓搜尋、評估與引擎基礎設施成熟。
 
 ## 主要功能
 
@@ -25,7 +25,7 @@
 - Check-aware quiescence search；未被將軍時只生成 noisy moves。
 - Static Exchange Evaluation，以及 history、killer、countermove 和 TT move ordering。
 - Reverse／forward futility pruning、帶 verification 的 null-move pruning、late-move pruning／reduction、internal iterative reduction，以及包含 multi-cut 處理的 singular extension。
-- 合法走法生成、make/unmake、Zobrist hashing、重複局面、五十步規則與子力不足和棋判定。
+- 標準西洋棋與 Chess960 的合法走法生成、make/unmake、Zobrist hashing、重複局面、五十步規則與子力不足和棋判定。
 - 內建且經 provenance 驗證的預設網路，也可透過 `EvalFile` 載入外部網路。
 - 提供 generic x86-64、AVX2、BMI2 與 AVX2+BMI2 四種固定指令集 Windows 建置。
 
@@ -141,6 +141,8 @@ quit
 
 MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或五欄形式。`position fen ... moves ...` 會解析到 `moves` 分隔符為止，以符合一般 UCI GUI 的行為。
 
+使用 Chess960 時，請先啟用 `UCI_Chess960` 再送入局面。MORS 同時接受 X-FEN 的 `KQkq` 權利與 Shredder-FEN 的車檔字母，易位則使用 UCI Chess960 的「王走向參與易位之車」記法。
+
 ### UCI 選項
 
 | 選項 | 範圍／預設值 | 說明 |
@@ -148,6 +150,7 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 | `Threads` | 1 | MORS 目前為單執行緒。 |
 | `Hash` | 1–32768 MiB；預設 16 MiB | Transposition table 容量。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
+| `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |
 | `EvalFile` | 預設使用內建網路 | 載入相容的外部 P2-H32 網路。 |
 | `Move Overhead` | 0–5000 ms；預設 10 ms | 為 GUI、排程及通訊延遲預留時間。 |
 
@@ -170,7 +173,6 @@ MORS 是持續開發中的實驗性軟體。搜尋技術與神經網路必須先
 目前刻意不包含：
 
 - 多執行緒搜尋；
-- Chess960；
 - Syzygy tablebases；
 - 引擎內部 opening-book play。
 

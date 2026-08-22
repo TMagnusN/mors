@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <charconv>
 #include <sstream>
 #include <string>
@@ -50,13 +51,22 @@ bool parse_integer(std::string_view text, Integer& result) noexcept {
     return error == std::errc{} && pointer == end;
 }
 
-Square relative_square_unchecked(Color color, Square white_square) noexcept {
-    return color == WHITE ? white_square : Square(int(white_square) + 56);
+Bitboard rank_segment(Square first, Square second) noexcept {
+    assert(is_ok(first) && is_ok(second) && rank_of(first) == rank_of(second));
+    const int begin = std::min(int(file_of(first)), int(file_of(second)));
+    const int end = std::max(int(file_of(first)), int(file_of(second)));
+    Bitboard result = EMPTY_BB;
+    for (int file = begin; file <= end; ++file)
+        result |= square_bb(make_square(File(file), rank_of(first)));
+    return result;
 }
 
 } // namespace
 
-std::expected<Position, std::string> Position::from_fen(std::string_view fen_text) {
+std::expected<Position, std::string> Position::from_fen(
+    std::string_view fen_text,
+    bool chess960
+) {
     std::istringstream stream{std::string(fen_text)};
     std::string board_field;
     std::string side_field;
@@ -81,6 +91,7 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
 
     Position position;
     int rank = RANK_8;
+    position.chess960_ = chess960;
     int file = FILE_A;
 
     for (const char token : board_field) {
@@ -117,15 +128,53 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
     else
         return std::unexpected("invalid side-to-move field");
 
+    if (popcount(position.pieces(WHITE, KING)) != 1
+        || popcount(position.pieces(BLACK, KING)) != 1) {
+        return std::unexpected("FEN must contain exactly one king per color");
+    }
+
     if (castling_field != "-") {
-        for (const char right : castling_field) {
-            switch (right) {
-            case 'K': position.castling_rights_ |= WHITE_KING_SIDE; break;
-            case 'Q': position.castling_rights_ |= WHITE_QUEEN_SIDE; break;
-            case 'k': position.castling_rights_ |= BLACK_KING_SIDE; break;
-            case 'q': position.castling_rights_ |= BLACK_QUEEN_SIDE; break;
-            default: return std::unexpected("invalid castling rights field");
+        if (castling_field.contains('-'))
+            return std::unexpected("invalid castling rights field");
+
+        for (const char token : castling_field) {
+            const bool black = std::islower(static_cast<unsigned char>(token)) != 0;
+            const Color color = black ? BLACK : WHITE;
+            const char upper = char(std::toupper(static_cast<unsigned char>(token)));
+            const Square king_from = position.king_square(color);
+            const Rank home_rank = color == WHITE ? RANK_1 : RANK_8;
+            if (rank_of(king_from) != home_rank)
+                return std::unexpected("castling king is not on its home rank");
+
+            Square rook_from = SQ_NONE;
+            if (upper == 'K') {
+                for (int rook_file = FILE_H;
+                     rook_file > int(file_of(king_from));
+                     --rook_file) {
+                    const Square candidate = make_square(File(rook_file), home_rank);
+                    if (position.piece_on(candidate) == make_piece(color, ROOK)) {
+                        rook_from = candidate;
+                        break;
+                    }
+                }
+            } else if (upper == 'Q') {
+                for (int rook_file = FILE_A;
+                     rook_file < int(file_of(king_from));
+                     ++rook_file) {
+                    const Square candidate = make_square(File(rook_file), home_rank);
+                    if (position.piece_on(candidate) == make_piece(color, ROOK)) {
+                        rook_from = candidate;
+                        break;
+                    }
+                }
+            } else if (upper >= 'A' && upper <= 'H') {
+                rook_from = make_square(File(upper - 'A'), home_rank);
+            } else {
+                return std::unexpected("invalid castling rights field");
             }
+
+            if (!is_ok(rook_from) || !position.set_castling_right(color, rook_from))
+                return std::unexpected("invalid or duplicate castling right");
         }
     }
 
@@ -155,10 +204,6 @@ std::expected<Position, std::string> Position::from_fen(std::string_view fen_tex
     position.halfmove_clock_ = std::uint16_t(halfmove);
     position.fullmove_number_ = std::uint16_t(fullmove);
 
-    if (popcount(position.pieces(WHITE, KING)) != 1
-        || popcount(position.pieces(BLACK, KING)) != 1) {
-        return std::unexpected("FEN must contain exactly one king per color");
-    }
 
     position.key_ = position.compute_key();
 
@@ -199,10 +244,25 @@ std::string Position::fen() const {
     if (castling_rights_ == NO_CASTLING) {
         result += '-';
     } else {
-        if (can_castle(WHITE_KING_SIDE))  result += 'K';
-        if (can_castle(WHITE_QUEEN_SIDE)) result += 'Q';
-        if (can_castle(BLACK_KING_SIDE))  result += 'k';
-        if (can_castle(BLACK_QUEEN_SIDE)) result += 'q';
+        const auto append_right = [this, &result](
+            CastlingRights right,
+            char classical
+        ) {
+            if (!can_castle(right))
+                return;
+            if (!chess960_) {
+                result += classical;
+                return;
+            }
+            const char file = char('A' + file_of(castling_rook_square(right)));
+            result += right == BLACK_KING_SIDE || right == BLACK_QUEEN_SIDE
+                ? char(std::tolower(static_cast<unsigned char>(file)))
+                : file;
+        };
+        append_right(WHITE_KING_SIDE, 'K');
+        append_right(WHITE_QUEEN_SIDE, 'Q');
+        append_right(BLACK_KING_SIDE, 'k');
+        append_right(BLACK_QUEEN_SIDE, 'q');
     }
 
     result += ' ';
@@ -241,6 +301,18 @@ Bitboard Position::pieces(Color color, PieceType type) const noexcept {
 
 bool Position::can_castle(CastlingRights rights) const noexcept {
     return (castling_rights_ & rights) != NO_CASTLING;
+}
+
+Square Position::castling_rook_square(CastlingRights right) const noexcept {
+    assert(right == WHITE_KING_SIDE || right == WHITE_QUEEN_SIDE
+        || right == BLACK_KING_SIDE || right == BLACK_QUEEN_SIDE);
+    return castling_rook_squares_[std::uint8_t(right)];
+}
+
+Bitboard Position::castling_path(CastlingRights right) const noexcept {
+    assert(right == WHITE_KING_SIDE || right == WHITE_QUEEN_SIDE
+        || right == BLACK_KING_SIDE || right == BLACK_QUEEN_SIDE);
+    return castling_paths_[std::uint8_t(right)];
 }
 
 Square Position::king_square(Color color) const noexcept {
@@ -301,14 +373,12 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
     if (type_of(moving_piece) == KING)
         clear_castling_right(us == WHITE ? WHITE_CASTLING : BLACK_CASTLING);
 
-    if (from == A1 || to == A1) clear_castling_right(WHITE_QUEEN_SIDE);
-    if (from == H1 || to == H1) clear_castling_right(WHITE_KING_SIDE);
-    if (from == A8 || to == A8) clear_castling_right(BLACK_QUEEN_SIDE);
-    if (from == H8 || to == H8) clear_castling_right(BLACK_KING_SIDE);
+    clear_castling_rights_by_square(from);
+    clear_castling_rights_by_square(to);
 
     if (castling_rights_ != old_castling_rights) {
-        key_ ^= zobrist::castling(old_castling_rights);
-        key_ ^= zobrist::castling(castling_rights_);
+        key_ ^= castling_key(old_castling_rights);
+        key_ ^= castling_key(castling_rights_);
     }
 
     switch (move.type()) {
@@ -329,12 +399,15 @@ void Position::do_move(Move move, StateInfo& state) noexcept {
 
     case CASTLING: {
         assert(type_of(moving_piece) == KING);
-        const bool king_side = file_of(to) == FILE_G;
-        const Square rook_from = relative_square_unchecked(us, king_side ? H1 : A1);
-        const Square rook_to = relative_square_unchecked(us, king_side ? F1 : D1);
+        const Square rook_from = to;
+        const bool king_side = file_of(rook_from) > file_of(from);
+        const Square king_to = castling_king_to(us, king_side);
+        const Square rook_to = castling_rook_to(us, king_side);
         assert(piece_on(rook_from) == make_piece(us, ROOK));
-        move_piece(from, to);
-        move_piece(rook_from, rook_to);
+        remove_piece(from);
+        remove_piece(rook_from);
+        put_piece(make_piece(us, KING), king_to);
+        put_piece(make_piece(us, ROOK), rook_to);
         break;
     }
     }
@@ -411,11 +484,14 @@ void Position::undo_move(Move move, const StateInfo& state) noexcept {
         break;
 
     case CASTLING: {
-        const bool king_side = file_of(to) == FILE_G;
-        const Square rook_from = relative_square_unchecked(us, king_side ? H1 : A1);
-        const Square rook_to = relative_square_unchecked(us, king_side ? F1 : D1);
-        move_piece_unkeyed(to, from);
-        move_piece_unkeyed(rook_to, rook_from);
+        const Square rook_from = to;
+        const bool king_side = file_of(rook_from) > file_of(from);
+        const Square king_to = castling_king_to(us, king_side);
+        const Square rook_to = castling_rook_to(us, king_side);
+        remove_piece_unkeyed(king_to);
+        remove_piece_unkeyed(rook_to);
+        put_piece_unkeyed(make_piece(us, KING), from);
+        put_piece_unkeyed(make_piece(us, ROOK), rook_from);
         break;
     }
     }
@@ -464,7 +540,7 @@ void Position::undo_null_move(const StateInfo& state) noexcept {
 }
 
 Key Position::compute_key() const noexcept {
-    Key result = zobrist::castling(castling_rights_);
+    Key result = castling_key(castling_rights_);
 
     for (int index = 0; index < SQUARE_NB; ++index) {
         const Piece piece = board_[index];
@@ -501,6 +577,24 @@ bool Position::is_consistent() const noexcept {
         expected_pieces[piece] |= square;
         expected_colors[color_of(piece)] |= square;
         expected_occupied |= square;
+    }
+
+    for (const CastlingRights right : {
+             WHITE_KING_SIDE, WHITE_QUEEN_SIDE,
+             BLACK_KING_SIDE, BLACK_QUEEN_SIDE}) {
+        if (!can_castle(right))
+            continue;
+        const Color color =
+            right == WHITE_KING_SIDE || right == WHITE_QUEEN_SIDE
+            ? WHITE : BLACK;
+        const Square rook = castling_rook_square(right);
+        const Square king = king_square(color);
+        if (!is_ok(rook)
+            || piece_on(rook) != make_piece(color, ROOK)
+            || (castling_rights_mask_[king] & right) == NO_CASTLING
+            || (castling_rights_mask_[rook] & right) == NO_CASTLING) {
+            return false;
+        }
     }
 
     return expected_pieces == piece_bitboards_
@@ -547,9 +641,63 @@ void Position::move_piece(Square from, Square to) noexcept {
     key_ ^= zobrist::piece_square(piece, to);
 }
 
+bool Position::set_castling_right(Color color, Square rook_from) noexcept {
+    if (!is_ok(color) || !is_ok(rook_from)
+        || popcount(pieces(color, KING)) != 1) {
+        return false;
+    }
+
+    const Square king_from = king_square(color);
+    const Rank home_rank = color == WHITE ? RANK_1 : RANK_8;
+    if (rank_of(king_from) != home_rank
+        || rank_of(rook_from) != home_rank
+        || king_from == rook_from
+        || piece_on(rook_from) != make_piece(color, ROOK)) {
+        return false;
+    }
+
+    const bool king_side = file_of(rook_from) > file_of(king_from);
+    const CastlingRights right = castling_right(color, king_side);
+    if (can_castle(right))
+        return false;
+
+    const Square king_to = castling_king_to(color, king_side);
+    const Square rook_to = castling_rook_to(color, king_side);
+    castling_rights_ |= right;
+    castling_rights_mask_[king_from] |= right;
+    castling_rights_mask_[rook_from] |= right;
+    castling_rook_squares_[std::uint8_t(right)] = rook_from;
+    castling_paths_[std::uint8_t(right)] =
+        (rank_segment(king_from, king_to) | rank_segment(rook_from, rook_to))
+        & ~(square_bb(king_from) | square_bb(rook_from));
+    return true;
+}
+
+Key Position::castling_key(CastlingRights rights) const noexcept {
+    Key result = zobrist::castling(rights);
+    for (const CastlingRights right : {
+             WHITE_KING_SIDE, WHITE_QUEEN_SIDE,
+             BLACK_KING_SIDE, BLACK_QUEEN_SIDE}) {
+        if ((rights & right) == NO_CASTLING)
+            continue;
+        const Square rook = castling_rook_squares_[std::uint8_t(right)];
+        assert(is_ok(rook));
+        result ^= zobrist::castling_rook(right, file_of(rook));
+    }
+    return result;
+}
+
 void Position::clear_castling_right(CastlingRights right) noexcept {
     castling_rights_ = CastlingRights(
         std::uint8_t(castling_rights_) & ~std::uint8_t(right)
+    );
+}
+
+void Position::clear_castling_rights_by_square(Square square) noexcept {
+    assert(is_ok(square));
+    castling_rights_ = CastlingRights(
+        std::uint8_t(castling_rights_)
+        & ~std::uint8_t(castling_rights_mask_[square])
     );
 }
 

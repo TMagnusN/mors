@@ -194,6 +194,20 @@ void append_feature(
     if (type_of(moving) == KING)
         diff[static_cast<std::size_t>(moving_color)].refresh = true;
 
+    if (move.type() == CASTLING) {
+        const Square rook_from = to;
+        const bool king_side = file_of(rook_from) > file_of(from);
+        const Square king_to = castling_king_to(moving_color, king_side);
+        const Square rook_to = castling_rook_to(moving_color, king_side);
+        const Piece rook = make_piece(moving_color, ROOK);
+
+        append_feature(diff, transforms, moving, from, false);
+        append_feature(diff, transforms, moving, king_to, true);
+        append_feature(diff, transforms, rook, rook_from, false);
+        append_feature(diff, transforms, rook, rook_to, true);
+        return diff;
+    }
+
     if (move.type() == EN_PASSANT) {
         const Square captured_square = to - pawn_push(moving_color);
         append_feature(
@@ -213,20 +227,6 @@ void append_feature(
         : moving;
     append_feature(diff, transforms, placed, to, true);
 
-    if (move.type() == CASTLING) {
-        const bool king_side = file_of(to) == FILE_G;
-        const Square rook_from = relative_square(
-            moving_color,
-            king_side ? H1 : A1
-        );
-        const Square rook_to = relative_square(
-            moving_color,
-            king_side ? F1 : D1
-        );
-        const Piece rook = make_piece(moving_color, ROOK);
-        append_feature(diff, transforms, rook, rook_from, false);
-        append_feature(diff, transforms, rook, rook_to, true);
-    }
     return diff;
 }
 

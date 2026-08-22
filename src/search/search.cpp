@@ -307,6 +307,16 @@ private:
     const Piece moving_piece = position.piece_on(from);
     assert(is_ok(moving_piece) && color_of(moving_piece) == us);
 
+    // Castling changes two pieces and its Chess960 overlaps make an ad-hoc
+    // occupancy transform needlessly fragile. It is rare, so use the canonical
+    // make-move path as the exact oracle.
+    if (move.type() == CASTLING) {
+        Position after = position;
+        StateInfo state;
+        after.do_move(move, state);
+        return in_check(after);
+    }
+
     Bitboard occupied = position.pieces();
     clear_square(occupied, from);
     if (move.type() == EN_PASSANT)
@@ -342,16 +352,6 @@ private:
     case QUEEN:  set_square(queens, to); break;
     case KING:   set_square(kings, to); break;
     default: assert(false); break;
-    }
-
-    if (move.type() == CASTLING) {
-        const bool king_side = file_of(to) == FILE_G;
-        const Square rook_from = relative_square(us, king_side ? H1 : A1);
-        const Square rook_to = relative_square(us, king_side ? F1 : D1);
-        clear_square(rooks, rook_from);
-        set_square(rooks, rook_to);
-        clear_square(occupied, rook_from);
-        set_square(occupied, rook_to);
     }
 
     const Square king = position.king_square(~us);

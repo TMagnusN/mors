@@ -47,15 +47,22 @@ std::vector<std::pair<Move, std::uint64_t>> perft_divide(Position& position, int
     return result;
 }
 
-std::string move_to_uci(Move move) {
+std::string move_to_uci(Move move, bool chess960) {
     assert(!move.is_none());
+    Square destination = move.to();
+    if (move.type() == CASTLING && !chess960) {
+        const Color color = rank_of(move.from()) == RANK_1 ? WHITE : BLACK;
+        const bool king_side = file_of(move.to()) > file_of(move.from());
+        destination = castling_king_to(color, king_side);
+    }
+
     std::string result;
     result.reserve(5);
 
     result += char('a' + file_of(move.from()));
     result += char('1' + rank_of(move.from()));
-    result += char('a' + file_of(move.to()));
-    result += char('1' + rank_of(move.to()));
+    result += char('a' + file_of(destination));
+    result += char('1' + rank_of(destination));
 
     if (move.type() == PROMOTION) {
         constexpr char PROMOTION_CHARS[PIECE_TYPE_NB] = {

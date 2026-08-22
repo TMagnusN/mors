@@ -84,14 +84,16 @@ bool test_golden(const nnue::Network& network) {
 }
 
 bool test_incremental_moves(const nnue::Network& network) {
-    constexpr std::array<std::string_view, 7> CASES{{
+    constexpr std::array<std::string_view, 9> CASES{{
         START_FEN,
         "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
         "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
         "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
         "4k3/8/8/8/3Pp3/8/8/4K3 b - d3 0 1",
         "1r2k3/P7/8/8/8/8/7p/4K3 w - - 0 1",
-        "4k3/7P/8/8/8/8/p7/4K3 b - - 0 1"
+        "4k3/7P/8/8/8/8/p7/4K3 b - - 0 1",
+        "4k3/8/8/8/8/8/8/R5KR w AH - 0 1",
+        "4k3/8/8/8/8/8/8/4KR2 w F - 0 1"
     }};
 
     bool saw_castling = false;

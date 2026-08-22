@@ -15,7 +15,7 @@
 
 **MORS** is an independent, actively developed chess engine written in C++23 by [Theodore Magnus Øen & Codex](AUTHORS). It communicates through the [Universal Chess Interface][uci-link], so it can run in a terminal or inside a UCI-compatible chess GUI.
 
-The current development version is **MORS 0.0.1-dev**. MORS presently targets standard chess and deliberately uses one search thread while its search, evaluation, and engine infrastructure mature.
+The current development version is **MORS 0.0.1-dev**. MORS supports standard chess and Chess960, and deliberately uses one search thread while its search, evaluation, and engine infrastructure mature.
 
 ## Highlights
 
@@ -25,7 +25,7 @@ The current development version is **MORS 0.0.1-dev**. MORS presently targets st
 - Check-aware quiescence search that generates only noisy moves outside check.
 - Static Exchange Evaluation, history, killer, countermove, and transposition-table move ordering.
 - Reverse and forward futility pruning, null-move pruning with verification, late-move pruning and reductions, internal iterative reduction, and singular extension with multi-cut handling.
-- Legal move generation, make/unmake, Zobrist hashing, repetition detection, the fifty-move rule, and insufficient-material detection.
+- Legal move generation for standard chess and Chess960, make/unmake, Zobrist hashing, repetition detection, the fifty-move rule, and insufficient-material detection.
 - An embedded, provenance-verified default network with optional external network loading through `EvalFile`.
 - Fixed-ISA Windows builds for generic x86-64, AVX2, BMI2, and AVX2+BMI2.
 
@@ -141,6 +141,8 @@ quit
 
 MORS accepts standard six-field FEN and the common four- or five-field forms with omitted move counters. A `position fen ... moves ...` command is parsed up to the `moves` separator, matching normal UCI GUI behavior.
 
+For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts both X-FEN `KQkq` rights and Shredder-FEN rook-file letters, and uses the UCI Chess960 king-to-rook-square castling notation.
+
 ### UCI options
 
 | Option | Range/default | Description |
@@ -148,6 +150,7 @@ MORS accepts standard six-field FEN and the common four- or five-field forms wit
 | `Threads` | 1 | MORS is currently single-threaded. |
 | `Hash` | 1–32768 MiB; default 16 MiB | Transposition-table capacity. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
+| `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
 | `EvalFile` | Embedded network by default | Loads a compatible external P2-H32 network. |
 | `Move Overhead` | 0–5000 ms; default 10 ms | Reserves time for GUI, scheduling, and communication delay. |
 
@@ -170,7 +173,6 @@ MORS is experimental software under active development. Search techniques and ne
 The current scope intentionally excludes:
 
 - multi-threaded search;
-- Chess960;
 - Syzygy tablebases;
 - opening-book play inside the engine.
 

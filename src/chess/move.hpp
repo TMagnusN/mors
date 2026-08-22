@@ -41,8 +41,11 @@ public:
         return encode(from, to, EN_PASSANT, 0);
     }
 
-    [[nodiscard]] static constexpr Move castling(Square from, Square to) noexcept {
-        return encode(from, to, CASTLING, 0);
+    // Castling is encoded king-from -> rook-from. Unlike a king-destination
+    // encoding, this remains unambiguous when a Chess960 king already stands
+    // on c/g or when either piece starts on its final square.
+    [[nodiscard]] static constexpr Move castling(Square king_from, Square rook_from) noexcept {
+        return encode(king_from, rook_from, CASTLING, 0);
     }
 
     [[nodiscard]] constexpr Square from() const noexcept {

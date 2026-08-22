@@ -106,48 +106,60 @@ void generate_piece_moves(const Position& position, MoveList& moves) noexcept {
 template<Color Us>
 void generate_castling(const Position& position, MoveList& moves) noexcept {
     constexpr Color Them = Us == WHITE ? BLACK : WHITE;
-    constexpr CastlingRights king_side_right =
-        Us == WHITE ? WHITE_KING_SIDE : BLACK_KING_SIDE;
-    constexpr CastlingRights queen_side_right =
-        Us == WHITE ? WHITE_QUEEN_SIDE : BLACK_QUEEN_SIDE;
 
-    const Square king_from = relative_square(Us, E1);
+    const Square king_from = position.king_square(Us);
     if (position.piece_on(king_from) != make_piece(Us, KING)
         || position.is_square_attacked(king_from, Them)) {
         return;
     }
 
     const Bitboard occupied_without_king = position.pieces() ^ square_bb(king_from);
+    const auto try_castling = [&](bool king_side) noexcept {
+        const CastlingRights right = castling_right(Us, king_side);
+        if (!position.can_castle(right))
+            return;
 
-    if (position.can_castle(king_side_right)) {
-        const Square rook_from = relative_square(Us, H1);
-        const Square through = relative_square(Us, F1);
-        const Square destination = relative_square(Us, G1);
-
-        if (position.piece_on(rook_from) == make_piece(Us, ROOK)
-            && position.piece_on(through) == NO_PIECE
-            && position.piece_on(destination) == NO_PIECE
-            && !position.is_square_attacked(through, Them, occupied_without_king)
-            && !position.is_square_attacked(destination, Them, occupied_without_king)) {
-            moves.push(Move::castling(king_from, destination));
+        const Square rook_from = position.castling_rook_square(right);
+        const Square king_to = castling_king_to(Us, king_side);
+        const Square rook_to = castling_rook_to(Us, king_side);
+        if (!is_ok(rook_from)
+            || position.piece_on(rook_from) != make_piece(Us, ROOK)
+            || (position.pieces() & position.castling_path(right)) != EMPTY_BB) {
+            return;
         }
-    }
 
-    if (position.can_castle(queen_side_right)) {
-        const Square rook_from = relative_square(Us, A1);
-        const Square extra_empty = relative_square(Us, B1);
-        const Square destination = relative_square(Us, C1);
-        const Square through = relative_square(Us, D1);
-
-        if (position.piece_on(rook_from) == make_piece(Us, ROOK)
-            && position.piece_on(extra_empty) == NO_PIECE
-            && position.piece_on(destination) == NO_PIECE
-            && position.piece_on(through) == NO_PIECE
-            && !position.is_square_attacked(through, Them, occupied_without_king)
-            && !position.is_square_attacked(destination, Them, occupied_without_king)) {
-            moves.push(Move::castling(king_from, destination));
+        if (king_to != king_from) {
+            const int step = int(king_to) > int(king_from) ? 1 : -1;
+            for (int square = int(king_from) + step;; square += step) {
+                const Square transit = Square(square);
+                if (position.is_square_attacked(
+                        transit,
+                        Them,
+                        occupied_without_king
+                    )) {
+                    return;
+                }
+                if (transit == king_to)
+                    break;
+            }
         }
-    }
+
+        // The rook can be the only blocker shielding a stationary or arriving
+        // king. Check the actual post-castling occupancy as well as the transit
+        // squares in the original position.
+        Bitboard occupied_after = position.pieces();
+        clear_square(occupied_after, king_from);
+        clear_square(occupied_after, rook_from);
+        set_square(occupied_after, king_to);
+        set_square(occupied_after, rook_to);
+        if (position.is_square_attacked(king_to, Them, occupied_after))
+            return;
+
+        moves.push(Move::castling(king_from, rook_from));
+    };
+
+    try_castling(true);
+    try_castling(false);
 }
 
 template<Color Us>

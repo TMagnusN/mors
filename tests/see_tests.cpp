@@ -92,9 +92,9 @@ bool test_special_moves() {
         && expect_see(CAPTURE_PROMOTION_FEN,
                       Move::promotion(A7, B8, QUEEN), 1301, false,
                       "capture promotion threshold is exact")
-        && expect_see(CASTLING_FEN, Move::castling(E1, G1), 0, true,
+        && expect_see(CASTLING_FEN, Move::castling(E1, H1), 0, true,
                       "castling is material-neutral")
-        && expect_see(CASTLING_FEN, Move::castling(E1, G1), 1, false,
+        && expect_see(CASTLING_FEN, Move::castling(E1, H1), 1, false,
                       "castling has no positive material gain");
 }
 

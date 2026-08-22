@@ -80,6 +80,12 @@ bool run_uci_tests() {
              << "setoption name EvalFile value mors-p2h32-s14400M-o3183M-c+frc.mnue\n"
              << "setoption name EvalFile value __missing_mors_network__.mnue\n"
              << "setoption name Move Overhead value 25\n"
+             << "setoption name UCI_Chess960 value true\n"
+             << "position fen 4k3/8/8/8/8/8/8/R5KR w AH - 0 1 moves g1h1\n"
+             << "d\n"
+             << "setoption name UCI_Chess960 value false\n"
+             << "position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1 moves e1g1\n"
+             << "d\n"
              << "position startpos moves e2e4 e7e5 g1f3\n"
              << "d\n"
              << "position fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n"
@@ -117,6 +123,8 @@ bool run_uci_tests() {
                            "time safety option must be advertised")
         && expect_contains(text, "option name EvalFile type string",
                            "network path option must be advertised")
+        && expect_contains(text, "option name UCI_Chess960 type check default false\n",
+                           "Chess960 mode must be advertised")
         && expect_contains(text, "info string Available processors: 0-",
                            "go must report available processors")
         && expect_contains(text, "info string Using 1 thread\n",
@@ -139,6 +147,16 @@ bool run_uci_tests() {
                            "default EvalFile must restore the embedded network")
         && expect_contains(text, "info string EvalFile load failed:",
                            "invalid EvalFile must report an error")
+        && expect_contains(
+               text,
+               "info string fen 4k3/8/8/8/8/8/8/R4RK1 b - - 1 1\n",
+               "Chess960 rook-square castling input must be accepted"
+           )
+        && expect_contains(
+               text,
+               "info string fen r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1\n",
+               "classical king-destination castling input must remain accepted"
+           )
         && expect_contains(text, "info string fen rnbqkbnr/pppp1ppp/",
                            "position moves must update the board")
         && expect_contains(
