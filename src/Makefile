@@ -6,6 +6,7 @@ SHELL := /usr/bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 CXX ?= g++
+WINDRES ?= windres
 
 ARCH ?= generic
 CONFIG ?= release
@@ -162,6 +163,10 @@ CXXFLAGS := \
 
 LDFLAGS := $(LINK_FLAGS)
 
+WINDOWS_RESOURCE_SOURCE := $(PROJECT_ROOT)/resources/windows/mors.rc
+WINDOWS_ICON_SOURCE := $(PROJECT_ROOT)/resources/windows/mors.ico
+WINDOWS_RESOURCE_OBJECT := $(OBJ_DIR)/resources/mors-icon.o
+
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
@@ -307,7 +312,7 @@ $(PERFT_TARGET): $(CORE_OBJECTS) $(PERFT_OBJECT)
 	mkdir -p "$(@D)"
 	$(CXX) $^ $(LDFLAGS) -o "$@"
 
-$(ENGINE_TARGET): $(CORE_OBJECTS) $(ENGINE_OBJECTS)
+$(ENGINE_TARGET): $(CORE_OBJECTS) $(ENGINE_OBJECTS) $(WINDOWS_RESOURCE_OBJECT)
 	mkdir -p "$(@D)"
 	$(CXX) $^ $(LDFLAGS) -o "$@"
 
@@ -326,6 +331,11 @@ $(DATAGEN_TARGET): $(CORE_OBJECTS) $(DATAGEN_OBJECT)
 # ---------------------------------------------------------------------------
 # Compilation
 # ---------------------------------------------------------------------------
+
+
+$(WINDOWS_RESOURCE_OBJECT): $(WINDOWS_RESOURCE_SOURCE) $(WINDOWS_ICON_SOURCE)
+	mkdir -p "$(@D)"
+	$(WINDRES) -I"$(PROJECT_ROOT)/resources/windows" -O coff -i "$<" -o "$@"
 
 $(OBJ_DIR)/%.o: %.cpp
 	mkdir -p "$(@D)"

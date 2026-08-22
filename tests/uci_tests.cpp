@@ -73,6 +73,7 @@ bool run_uci_tests() {
     std::ostringstream commands;
     commands << "uci\n"
              << "isready\n"
+             << "setoption name Threads value 1\n"
              << "setoption name Hash value 2\n"
              << "setoption name Clear Hash\n"
              << "setoption name EvalFile value " << network.string() << "\n"
@@ -99,6 +100,8 @@ bool run_uci_tests() {
                            "author id must be emitted")
         && expect_contains(text, "uciok\n", "uci handshake must complete")
         && expect_contains(text, "readyok\n", "readiness handshake must complete")
+        && expect_contains(text, "option name Threads type spin default 1 min 1 max 1\n",
+                           "single-thread limit must be advertised")
         && expect_contains(text, "option name Move Overhead type spin",
                            "time safety option must be advertised")
         && expect_contains(text, "option name EvalFile type string",

@@ -226,6 +226,7 @@ public:
             std::ostringstream response;
             response << "id name MORS 0.0.1-dev\n"
                      << "id author Theodore Magnus Oen\n"
+                     << "option name Threads type spin default 1 min 1 max 1\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
                      << "option name Clear Hash type button\n"
@@ -363,6 +364,16 @@ private:
             time_manager_.set_move_overhead_ms(milliseconds);
             return;
         }
+
+        if (name == "Threads") {
+            std::size_t threads = 0;
+            if (!parse_integer(value_text, threads) || threads != 1) {
+                emit(output, "info string Threads must be 1\n");
+                return;
+            }
+            return;
+        }
+
         if (name != "Hash") {
             emit(output, "info string unsupported option: " + name + "\n");
             return;

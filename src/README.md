@@ -1,7 +1,7 @@
 # MORS `src` 架構設計（C++23）
 
 Release 建置會產生 `mors-<arch>.exe` UCI 引擎。目前支援 `uci`、
-`isready`、`ucinewgame`、`setoption name Hash`、`Clear Hash`、
+`isready`、`ucinewgame`、`setoption name Threads`（固定為 1）、`Hash`、`Clear Hash`、
 `Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
 `go nodes <n>`、`go movetime <ms>`、`wtime/btime/winc/binc/movestogo`、
 `go infinite`、`stop` 與 `quit`。搜尋在背景執行，`stop` 以 cooperative
