@@ -14,6 +14,8 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -291,6 +293,98 @@ bool test_tt_reuse(const nnue::Network& network) {
                   "two coordinated searches must advance generation exactly twice");
 }
 
+bool test_persistent_thread_pool(const nnue::Network& network) {
+    auto parsed = Position::from_fen(START_FEN);
+    if (!expect(parsed.has_value(), "thread-pool root FEN must parse"))
+        return false;
+
+    const std::string original_fen = parsed->fen();
+    const Key original_key = parsed->key();
+    TranspositionTable table(4);
+    SearchThreadPool pool(table, network);
+    if (!expect(pool.size() == 1, "thread pool must start with one worker"))
+        return false;
+
+    pool.resize(4);
+    if (!expect(pool.size() == 4, "thread pool must grow while idle"))
+        return false;
+
+    SearchResult completed;
+    std::string completion_error;
+    std::size_t completion_count = 0;
+    pool.start(
+        *parsed,
+        SearchLimits{.max_depth = 3},
+        [&](const SearchResult& result, std::string_view error) {
+            completed = result;
+            completion_error = error;
+            ++completion_count;
+        }
+    );
+    if (!expect(pool.searching(), "start must publish the active job synchronously"))
+        return false;
+    pool.wait();
+
+    if (!expect(!pool.searching(), "wait must observe an idle pool")
+        || !expect(completion_count == 1 && completion_error.empty(),
+                   "main worker must report one successful completion")
+        || !expect(completed.completed_depth == 3
+                       && completed.stats.nodes == 351
+                       && completed.best_move == Move::normal(E2, E4),
+                   "persistent main worker must preserve fixed search output")
+        || !expect(table.generation() == 1,
+                   "one pool job must advance TT generation exactly once")
+        || !expect(parsed->key() == original_key
+                       && parsed->fen() == original_fen,
+                   "pool search must leave the caller root untouched")) {
+        return false;
+    }
+
+    pool.resize(1);
+    if (!expect(pool.size() == 1, "thread pool must shrink while idle"))
+        return false;
+
+    SearchLimits long_limits{.max_depth = MAX_PLY};
+    bool stopped_completion = false;
+    bool stopped_result = false;
+    pool.start(
+        *parsed,
+        long_limits,
+        [&](const SearchResult& result, std::string_view error) {
+            stopped_completion = error.empty();
+            stopped_result = result.stopped;
+        }
+    );
+
+    bool rejected_busy_resize = false;
+    try {
+        pool.resize(2);
+    } catch (const std::logic_error&) {
+        rejected_busy_resize = true;
+    }
+    pool.request_stop();
+    pool.wait();
+
+    if (!expect(rejected_busy_resize,
+                "thread pool must reject resize during an active job")
+        || !expect(stopped_completion && stopped_result,
+                   "pool-owned cancellation must report one normal completion")
+        || !expect(table.generation() == 2,
+                   "stopped pool jobs must still advance TT generation once")) {
+        return false;
+    }
+
+    {
+        SearchThreadPool destructor_pool(table, network, 2);
+        destructor_pool.start(
+            *parsed,
+            SearchLimits{.max_depth = MAX_PLY}
+        );
+    }
+    return expect(table.generation() == 3,
+                  "pool destruction must stop and join an active job");
+}
+
 bool test_node_limit(const nnue::Network& network) {
     auto parsed = Position::from_fen(START_FEN);
     if (!expect(parsed.has_value(), "node-limit FEN must parse"))
@@ -424,6 +518,7 @@ bool run_search_tests() {
                      && test_pvs_and_restoration(*loaded)
                      && test_reverse_futility_pruning(*loaded)
                      && test_tt_reuse(*loaded)
+                     && test_persistent_thread_pool(*loaded)
                      && test_node_limit(*loaded)
                      && test_cooperative_stop_and_deadline(*loaded)
                      && test_draw_rules(*loaded)

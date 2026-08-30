@@ -73,7 +73,8 @@ bool run_uci_tests() {
     std::ostringstream commands;
     commands << "uci\n"
              << "isready\n"
-             << "setoption name Threads value 1\n"
+             << "setoption name Threads value 4\n"
+             << "setoption name Threads value 0\n"
              << "setoption name Hash value 2\n"
              << "setoption name Clear Hash\n"
              << "setoption name EvalFile value " << network.string() << "\n"
@@ -94,6 +95,7 @@ bool run_uci_tests() {
              << "d\n"
              << "go movetime 20\n"
              << "stop\n"
+             << "setoption name Threads value 1\n"
              << "position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\n"
              << "go wtime 1000 btime 1000 winc 10 binc 10 movestogo 20\n"
              << "stop\n"
@@ -117,8 +119,10 @@ bool run_uci_tests() {
                            "author id must be emitted")
         && expect_contains(text, "uciok\n", "uci handshake must complete")
         && expect_contains(text, "readyok\n", "readiness handshake must complete")
-        && expect_contains(text, "option name Threads type spin default 1 min 1 max 1\n",
-                           "single-thread limit must be advertised")
+        && expect_contains(text, "option name Threads type spin default 1 min 1 max 256\n",
+                           "persistent thread-pool range must be advertised")
+        && expect_contains(text, "info string Threads must be between 1 and 256\n",
+                           "invalid thread count must be rejected")
         && expect_contains(text, "option name Move Overhead type spin",
                            "time safety option must be advertised")
         && expect_contains(text, "option name EvalFile type string",
@@ -127,8 +131,13 @@ bool run_uci_tests() {
                            "Chess960 mode must be advertised")
         && expect_contains(text, "info string Available processors: 0-",
                            "go must report available processors")
+        && expect_contains(
+               text,
+               "info string Using 4 threads (1 active search worker)\n",
+               "go must report parked helper workers honestly"
+           )
         && expect_contains(text, "info string Using 1 thread\n",
-                           "go must report the active thread count")
+                           "pool must shrink back to one worker")
         && expect_contains(
                text,
                "info string NNUE evaluation using mors-p2h32-s14400M-o3183M-c+frc.mnue "

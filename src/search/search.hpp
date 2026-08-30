@@ -13,7 +13,9 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <span>
+#include <string_view>
 
 namespace mors {
 
@@ -83,6 +85,47 @@ struct SearchResult final {
 
     std::array<Move, MAX_PLY> principal_variation{};
     std::size_t pv_length = 0;
+};
+
+inline constexpr std::size_t MAX_SEARCH_THREADS = 256;
+
+// Owns a persistent set of search threads. Jobs are asynchronous: the main
+// worker performs the coordinated search and invokes the completion callback,
+// while helper workers remain parked until Lazy SMP is enabled. resize() and
+// start() must only be called while no job is active. The pool owns async
+// cancellation after start(); callers stop a job through request_stop().
+class SearchThreadPool final {
+public:
+    using CompletionCallback =
+        std::function<void(const SearchResult&, std::string_view error)>;
+
+    SearchThreadPool(
+        TranspositionTable& table,
+        const nnue::Network& network,
+        std::size_t thread_count = 1
+    );
+    ~SearchThreadPool();
+
+    SearchThreadPool(const SearchThreadPool&) = delete;
+    SearchThreadPool& operator=(const SearchThreadPool&) = delete;
+    SearchThreadPool(SearchThreadPool&&) = delete;
+    SearchThreadPool& operator=(SearchThreadPool&&) = delete;
+
+    void resize(std::size_t thread_count);
+    [[nodiscard]] std::size_t size() const;
+
+    void start(
+        const Position& root_position,
+        const SearchLimits& limits,
+        CompletionCallback completion_callback = {}
+    );
+    void request_stop() noexcept;
+    void wait();
+    [[nodiscard]] bool searching() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 // Runs an iterative-deepening PVS search through the current single-worker

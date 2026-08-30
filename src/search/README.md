@@ -507,9 +507,11 @@ Prefetch 只是 cache hint，不可改變正確性，也不應為取得 key 重�
 
 公開檔名固定使用 `search.hpp` 與 `search.cpp`，不建立名為 `SearchWorker` 的公開類別。公開層只暴露穩定的 request/result/limits API。
 
-公開 `search()` 目前建立一個私有 `SearchCoordinator`。Coordinator 驗證 request、
-每次 root search 只推進一次 TT generation，並決定只有 main worker 能呼叫 iteration
-callback。實際搜尋由可重用的 `SearchWorker` 執行；目前 coordinator 只配置一個 worker。
+同步公開 `search()` 建立一個私有 `SearchCoordinator` 與 main `SearchWorker`。
+UCI 則持有公開的 `SearchThreadPool`：所有 OS thread 跨 `go` 常駐，main thread
+接收非同步 job，helper thread 目前只追蹤 job generation 後繼續等待。Coordinator
+驗證 request、每次 root search 只推進一次 TT generation，並決定只有 main worker
+能呼叫 iteration callback。
 
 ```text
 public search()
@@ -519,6 +521,11 @@ public search()
     `-- SearchWorker
         |-- private root Position copy
         `-- per-job Context
+
+UCI SearchThreadPool
+|-- persistent main thread
+|   `-- SearchWorker -> SearchCoordinator -> per-job Context
+`-- persistent helper threads (parked until Lazy SMP)
 ```
 
 每個 worker 的可變工作狀態放在 `search.cpp` 私有 `Context`：
@@ -535,9 +542,10 @@ search.cpp private Context
 `-- limits / stop state
 ```
 
-`Context` 是實作細節，不出現在 engine/protocol 公開 header。Lazy SMP 可讓每個
-持久 thread 擁有一個 `SearchWorker`；每個 job 建立獨立 Context 並複製 root Position，
-只共享停止狀態、唯讀 network 與目前已支援並行 probe/write 的 TT。
+`Context` 是實作細節，不出現在 engine/protocol 公開 header。每個 persistent
+thread 已擁有一個私有 `SearchWorker`；目前只有 main worker 為 job 建立 Context。
+Lazy SMP 啟用後，每個 helper 也會建立獨立 Context 並複製 root Position，只共享停止
+狀態、唯讀 network 與目前已支援並行 probe/write 的 TT。
 
 建議檔案責任：
 
@@ -556,9 +564,9 @@ lane 的 busy sentinel 取得 slot，再發布完整 payload 與最終 signature
 讀取 payload 前後驗證 signature lane，避免接受正在替換的 entry。
 
 `TTWriter` 仍保存 cluster 指標與 slot，`resize()` / `clear()` 仍會使它失效。因此這
-兩個操作不是搜尋期操作：engine 必須先發出 stop 並 join 所有 worker，才能清空或
-替換 table storage。一次 root search 也只應由 coordinator 呼叫一次 `new_search()`；
-worker 不應各自增加 generation。
+兩個操作不是搜尋期操作：engine 必須先發出 stop 並等待 ThreadPool 回到 idle，才能
+清空或替換 table storage。ThreadPool 本身也只允許在 idle 狀態 resize。一次 root
+search 只由 coordinator 呼叫一次 `new_search()`；worker 不應各自增加 generation。
 
 ## 參考結論
 

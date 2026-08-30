@@ -1,17 +1,19 @@
 # MORS `src` 架構設計（C++23）
 
 Release 建置會產生 `mors-<arch>.exe` UCI 引擎。目前支援 `uci`、
-`isready`、`ucinewgame`、`setoption name Threads`（固定為 1）、`Hash`、`Clear Hash`、
+`isready`、`ucinewgame`、`setoption name Threads`（1–256）、`Hash`、`Clear Hash`、
 `Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
 `go nodes <n>`、`go movetime <ms>`、`wtime/btime/winc/binc/movestogo`、
-`go infinite`、`stop` 與 `quit`。搜尋在背景執行，`stop` 以 cooperative
-cancellation 結束目前 iteration 並回傳最後一個完整 depth 的結果。
+`go infinite`、`stop` 與 `quit`。搜尋由 persistent ThreadPool 在背景執行，
+`stop` 以 cooperative cancellation 結束目前 iteration 並回傳最後一個完整 depth
+的結果。現階段只有 main worker 執行搜尋，其餘 helper worker 常駐等待，留給下一階段
+Lazy SMP 使用；因此 `Threads > 1` 尚不提供搜尋加速。
 
 Release UCI executable 會在編譯時嵌入 provenance 驗證過的預設 NNUE，不需要
 在 executable 旁另外部署 `.mnue`。UCI `EvalFile` 仍可載入外部網路；將
 選項設回預設檔名會重新使用內建網路。
 每次有效的 `go` 會在第一條 depth 資訊前回報可用處理器、實際 thread 數、
-目前 NNUE 架構及 network replica 狀態。
+目前 active search worker 數、NNUE 架構及 network replica 狀態。
 
 本目錄預計承載一個完全獨立設計與實作的現代化西洋棋引擎。UCI、引擎協調、搜尋、棋盤核心、評估與平台最佳化各自有明確邊界。
 

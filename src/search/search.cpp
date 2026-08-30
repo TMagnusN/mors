@@ -16,12 +16,20 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace mors {
@@ -1290,18 +1298,19 @@ private:
 
 // Coordinates state shared by a root search. Only this layer advances the TT
 // generation and selects which worker may report iterations; helper workers
-// will receive an empty callback when the persistent pool is introduced.
+// will receive an empty callback when Lazy SMP is introduced.
 class SearchCoordinator final {
 public:
     SearchCoordinator(
         TranspositionTable& table,
         const nnue::Network& network,
-        const SearchLimits& limits
+        const SearchLimits& limits,
+        SearchWorker& main_worker
     ) noexcept
         : table_(table),
           network_(network),
           limits_(limits),
-          main_worker_(table_, network_) {}
+          main_worker_(main_worker) {}
 
     [[nodiscard]] SearchResult run(const Position& root_position) {
         if (!network_.valid())
@@ -1323,10 +1332,323 @@ private:
     TranspositionTable& table_;
     const nnue::Network& network_;
     const SearchLimits& limits_;
-    SearchWorker main_worker_;
+    SearchWorker& main_worker_;
 };
 
 } // namespace
+
+class SearchThreadPool::Impl final {
+public:
+    Impl(
+        TranspositionTable& table,
+        const nnue::Network& network,
+        std::size_t thread_count
+    )
+        : table_(table), network_(network) {
+        resize(thread_count);
+    }
+
+    ~Impl() {
+        try {
+            request_stop();
+            wait();
+            stop_threads();
+        } catch (...) {
+            std::terminate();
+        }
+    }
+
+    void resize(std::size_t thread_count) {
+        if (thread_count < 1 || thread_count > MAX_SEARCH_THREADS)
+            throw std::invalid_argument("thread count is outside the supported range");
+
+        std::size_t previous_thread_count = 0;
+        {
+            const std::lock_guard lock(mutex_);
+            if (active_)
+                throw std::logic_error("cannot resize the thread pool during search");
+            if (restarting_)
+                throw std::logic_error("thread pool resize is already in progress");
+            if (threads_.size() == thread_count)
+                return;
+            previous_thread_count = threads_.size();
+        }
+
+        try {
+            restart_threads(thread_count);
+        } catch (...) {
+            const std::exception_ptr resize_error = std::current_exception();
+            if (previous_thread_count != 0) {
+                try {
+                    restart_threads(previous_thread_count);
+                } catch (...) {
+                    // Preserve the original resize failure. A second resource
+                    // failure can still leave the pool unavailable.
+                }
+            }
+            std::rethrow_exception(resize_error);
+        }
+    }
+
+    [[nodiscard]] std::size_t size() const {
+        const std::lock_guard lock(mutex_);
+        return threads_.size();
+    }
+
+    void start(
+        const Position& root_position,
+        const SearchLimits& limits,
+        CompletionCallback completion_callback
+    ) {
+        if (!network_.valid())
+            throw std::invalid_argument("search requires a valid NNUE network");
+        if (table_.cluster_count() == 0)
+            throw std::invalid_argument("search requires a non-empty transposition table");
+        if (limits.max_depth < 1 || limits.max_depth > MAX_PLY)
+            throw std::invalid_argument("search depth is outside the supported range");
+
+        {
+            const std::lock_guard lock(mutex_);
+            if (active_)
+                throw std::logic_error("thread pool already has an active search");
+            if (restarting_ || shutting_down_ || threads_.empty())
+                throw std::logic_error("thread pool is not ready");
+
+            const bool initially_stopped =
+                limits.stop != nullptr
+                && limits.stop->load(std::memory_order_acquire);
+            stop_requested_.store(initially_stopped, std::memory_order_release);
+            job_.emplace(
+                root_position,
+                limits,
+                stop_requested_,
+                std::move(completion_callback)
+            );
+            active_ = true;
+            ++job_generation_;
+        }
+        job_cv_.notify_all();
+    }
+
+    void request_stop() noexcept {
+        stop_requested_.store(true, std::memory_order_release);
+    }
+
+    void wait() {
+        std::unique_lock lock(mutex_);
+        idle_cv_.wait(lock, [this] { return !active_; });
+    }
+
+    [[nodiscard]] bool searching() const {
+        const std::lock_guard lock(mutex_);
+        return active_;
+    }
+
+private:
+    struct Job final {
+        Job(
+            const Position& root_position,
+            const SearchLimits& requested_limits,
+            std::atomic_bool& job_stop,
+            CompletionCallback requested_completion
+        )
+            : root(root_position),
+              prior_keys(requested_limits.prior_keys.size()),
+              limits(requested_limits),
+              completion(std::move(requested_completion)) {
+            if (!prior_keys.empty()) {
+                std::copy(
+                    requested_limits.prior_keys.begin(),
+                    requested_limits.prior_keys.end(),
+                    prior_keys.begin()
+                );
+            }
+            limits.prior_keys = std::span<const Key>(prior_keys);
+            limits.stop = &job_stop;
+        }
+
+        Position root;
+        std::vector<Key> prior_keys;
+        SearchLimits limits;
+        CompletionCallback completion;
+    };
+
+    void restart_threads(std::size_t thread_count) {
+        std::vector<std::thread> retiring;
+        {
+            const std::lock_guard lock(mutex_);
+            restarting_ = true;
+            shutting_down_ = true;
+            retiring.swap(threads_);
+        }
+        job_cv_.notify_all();
+        for (std::thread& thread : retiring)
+            if (thread.joinable())
+                thread.join();
+
+        {
+            const std::lock_guard lock(mutex_);
+            shutting_down_ = false;
+            job_generation_ = 0;
+        }
+
+        std::vector<std::thread> replacements;
+        try {
+            replacements.reserve(thread_count);
+            for (std::size_t index = 0; index < thread_count; ++index)
+                replacements.emplace_back(&Impl::worker_loop, this, index);
+        } catch (...) {
+            {
+                const std::lock_guard lock(mutex_);
+                shutting_down_ = true;
+            }
+            job_cv_.notify_all();
+            for (std::thread& thread : replacements)
+                if (thread.joinable())
+                    thread.join();
+            {
+                const std::lock_guard lock(mutex_);
+                shutting_down_ = false;
+                restarting_ = false;
+            }
+            throw;
+        }
+
+        {
+            const std::lock_guard lock(mutex_);
+            threads_ = std::move(replacements);
+            restarting_ = false;
+        }
+    }
+
+    void stop_threads() {
+        std::vector<std::thread> retiring;
+        {
+            const std::lock_guard lock(mutex_);
+            restarting_ = true;
+            shutting_down_ = true;
+            retiring.swap(threads_);
+        }
+        job_cv_.notify_all();
+        for (std::thread& thread : retiring)
+            if (thread.joinable())
+                thread.join();
+        {
+            const std::lock_guard lock(mutex_);
+            shutting_down_ = false;
+            restarting_ = false;
+            job_generation_ = 0;
+        }
+    }
+
+    void worker_loop(std::size_t worker_index) {
+        SearchWorker worker(table_, network_);
+        std::uint64_t observed_generation = 0;
+
+        while (true) {
+            Job* job = nullptr;
+            {
+                std::unique_lock lock(mutex_);
+                job_cv_.wait(lock, [this, observed_generation] {
+                    return shutting_down_
+                        || job_generation_ != observed_generation;
+                });
+                if (shutting_down_)
+                    return;
+
+                observed_generation = job_generation_;
+                if (worker_index != 0)
+                    continue;
+
+                assert(active_);
+                assert(job_.has_value());
+                job = &*job_;
+            }
+
+            SearchResult result;
+            std::string error;
+            try {
+                SearchCoordinator coordinator(
+                    table_,
+                    network_,
+                    job->limits,
+                    worker
+                );
+                result = coordinator.run(job->root);
+            } catch (const std::exception& exception) {
+                error = exception.what();
+            } catch (...) {
+                error = "unknown search failure";
+            }
+
+            try {
+                if (job->completion)
+                    job->completion(result, error);
+            } catch (...) {
+                // Completion callbacks are external reporting hooks. A faulty
+                // reporter must not strand the persistent worker in busy state.
+            }
+
+            {
+                const std::lock_guard lock(mutex_);
+                assert(job_generation_ == observed_generation);
+                job_.reset();
+                active_ = false;
+            }
+            idle_cv_.notify_all();
+        }
+    }
+
+    TranspositionTable& table_;
+    const nnue::Network& network_;
+    mutable std::mutex mutex_;
+    std::condition_variable job_cv_;
+    std::condition_variable idle_cv_;
+    std::vector<std::thread> threads_;
+    std::optional<Job> job_;
+    std::atomic_bool stop_requested_{false};
+    std::uint64_t job_generation_ = 0;
+    bool active_ = false;
+    bool restarting_ = false;
+    bool shutting_down_ = false;
+};
+
+SearchThreadPool::SearchThreadPool(
+    TranspositionTable& table,
+    const nnue::Network& network,
+    std::size_t thread_count
+)
+    : impl_(std::make_unique<Impl>(table, network, thread_count)) {}
+
+SearchThreadPool::~SearchThreadPool() = default;
+
+void SearchThreadPool::resize(std::size_t thread_count) {
+    impl_->resize(thread_count);
+}
+
+std::size_t SearchThreadPool::size() const {
+    return impl_->size();
+}
+
+void SearchThreadPool::start(
+    const Position& root_position,
+    const SearchLimits& limits,
+    CompletionCallback completion_callback
+) {
+    impl_->start(root_position, limits, std::move(completion_callback));
+}
+
+void SearchThreadPool::request_stop() noexcept {
+    impl_->request_stop();
+}
+
+void SearchThreadPool::wait() {
+    impl_->wait();
+}
+
+bool SearchThreadPool::searching() const {
+    return impl_->searching();
+}
 
 SearchResult search(
     Position& position,
@@ -1334,7 +1656,13 @@ SearchResult search(
     const nnue::Network& network,
     const SearchLimits& limits
 ) {
-    SearchCoordinator coordinator(table, network, limits);
+    SearchWorker main_worker(table, network);
+    SearchCoordinator coordinator(
+        table,
+        network,
+        limits,
+        main_worker
+    );
     return coordinator.run(position);
 }
 

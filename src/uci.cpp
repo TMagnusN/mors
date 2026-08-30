@@ -14,7 +14,6 @@
 #include "search/time.hpp"
 #include "search/tt.hpp"
 
-#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -156,15 +155,14 @@ public:
     explicit UciSession(nnue::Network network)
         : position_(start_position()),
           table_(DEFAULT_TT_SIZE_MB),
-          network_(std::move(network)) {}
+          network_(std::move(network)),
+          thread_pool_(table_, network_) {}
 
     ~UciSession() {
         stop_search();
     }
 
     [[nodiscard]] bool process(std::string_view line, std::ostream& output) {
-        join_finished_search();
-
         std::istringstream stream{std::string(line)};
         std::string command;
         if (!(stream >> command))
@@ -174,7 +172,8 @@ public:
             std::ostringstream response;
             response << "id name MORS 0.0.1-dev\n"
                      << "id author Theodore Magnus Øen & Codex\n"
-                     << "option name Threads type spin default 1 min 1 max 1\n"
+                     << "option name Threads type spin default 1 min 1 max "
+                     << MAX_SEARCH_THREADS << "\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max 32768\n"
                      << "option name Clear Hash type button\n"
@@ -201,7 +200,7 @@ public:
             return false;
         }
 
-        if (search_running_.load(std::memory_order_acquire)) {
+        if (thread_pool_.searching()) {
             emit(output, "info string search busy, send stop first\n");
             return true;
         }
@@ -232,18 +231,9 @@ private:
         output.flush();
     }
 
-    void join_finished_search() {
-        if (search_thread_.joinable()
-            && !search_running_.load(std::memory_order_acquire)) {
-            search_thread_.join();
-        }
-    }
-
     void stop_search() {
-        stop_requested_.store(true, std::memory_order_release);
-        if (search_thread_.joinable())
-            search_thread_.join();
-        search_running_.store(false, std::memory_order_release);
+        thread_pool_.request_stop();
+        thread_pool_.wait();
     }
 
     void handle_setoption(std::istringstream& stream, std::ostream& output) {
@@ -327,9 +317,23 @@ private:
 
         if (name == "Threads") {
             std::size_t threads = 0;
-            if (!parse_integer(value_text, threads) || threads != 1) {
-                emit(output, "info string Threads must be 1\n");
+            if (!parse_integer(value_text, threads)
+                || threads < 1 || threads > MAX_SEARCH_THREADS) {
+                emit(
+                    output,
+                    "info string Threads must be between 1 and "
+                        + std::to_string(MAX_SEARCH_THREADS) + "\n"
+                );
                 return;
+            }
+            try {
+                thread_pool_.resize(threads);
+            } catch (const std::exception& error) {
+                emit(
+                    output,
+                    "info string Threads resize failed: "
+                        + std::string(error.what()) + "\n"
+                );
             }
             return;
         }
@@ -492,10 +496,18 @@ private:
 
         constexpr std::size_t MEBIBYTE = 1U << 20;
         const std::size_t network_mib = network_.memory_bytes() / MEBIBYTE;
+        const std::size_t thread_count = thread_pool_.size();
         std::ostringstream configuration;
         configuration
-            << "info string Available processors: 0-" << last_processor << '\n'
-            << "info string Using 1 thread\n"
+            << "info string Available processors: 0-" << last_processor << '\n';
+        if (thread_count == 1) {
+            configuration << "info string Using 1 thread\n";
+        } else {
+            configuration
+                << "info string Using " << thread_count
+                << " threads (1 active search worker)\n";
+        }
+        configuration
             << "info string NNUE evaluation using " << network_name
             << " (" << network_mib << "MiB, P2-H32 ("
             << nnue::P2H32::COARSE_INPUTS << "->"
@@ -510,97 +522,84 @@ private:
         generate_legal(position_, legal_moves);
         const Move fallback = legal_moves.empty() ? Move{} : legal_moves[0];
         Position root = position_;
-        std::vector<Key> history = prior_keys_;
         const auto started = std::chrono::steady_clock::now();
-        limits.stop = &stop_requested_;
         limits.start_time = started;
-        limits.prior_keys = {};
+        limits.prior_keys = prior_keys_;
+        limits.iteration_callback =
+            [this, root, started, output = &output](
+                const SearchResult& iteration
+            ) {
+                const auto elapsed =
+                    std::chrono::steady_clock::now() - started;
+                const auto elapsed_count =
+                    std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                    >(elapsed).count();
+                const std::uint64_t elapsed_ms = elapsed_count > 0
+                    ? static_cast<std::uint64_t>(elapsed_count)
+                    : 0;
+                const std::uint64_t nps = elapsed_ms != 0
+                    ? iteration.stats.nodes * 1'000 / elapsed_ms
+                    : 0;
+                const nnue::WdlTriplet wdl =
+                    nnue::score_to_wdl(iteration.value, root);
 
-        stop_requested_.store(false, std::memory_order_release);
-        search_running_.store(true, std::memory_order_release);
+                std::ostringstream response;
+                response << "info depth "
+                         << iteration.completed_depth
+                         << " seldepth "
+                         << iteration.stats.seldepth << ' ';
+                emit_score(response, iteration.value, root);
+                response << " wdl " << wdl.win << ' '
+                         << wdl.draw << ' ' << wdl.loss
+                         << " nodes " << iteration.stats.nodes
+                         << " nps " << nps
+                         << " hashfull " << table_.hashfull()
+                         << " time " << elapsed_ms
+                         << " pv";
+                for (std::size_t index = 0;
+                     index < iteration.pv_length;
+                     ++index) {
+                    response << ' '
+                             << move_to_uci(
+                                    iteration.principal_variation[index],
+                                    root.chess960()
+                                );
+                }
+                response << '\n';
+                emit(*output, response.str());
+            };
+
+        const bool root_chess960 = root.chess960();
         try {
-            search_thread_ = std::thread(
-                [this,
-                 root = std::move(root),
-                 history = std::move(history),
-                 limits,
-                 fallback,
-                 started,
-                 output = &output]() mutable {
-                    limits.prior_keys = history;
-                    try {
-                        limits.iteration_callback =
-                            [this, &root, started, output](
-                                const SearchResult& iteration
-                            ) {
-                                const auto elapsed =
-                                    std::chrono::steady_clock::now() - started;
-                                const auto elapsed_count =
-                                    std::chrono::duration_cast<
-                                        std::chrono::milliseconds
-                                    >(elapsed).count();
-                                const std::uint64_t elapsed_ms = elapsed_count > 0
-                                    ? static_cast<std::uint64_t>(elapsed_count)
-                                    : 0;
-                                const std::uint64_t nps = elapsed_ms != 0
-                                    ? iteration.stats.nodes * 1'000 / elapsed_ms
-                                    : 0;
-                                const nnue::WdlTriplet wdl =
-                                    nnue::score_to_wdl(iteration.value, root);
-
-                                std::ostringstream response;
-                                response << "info depth "
-                                         << iteration.completed_depth
-                                         << " seldepth "
-                                         << iteration.stats.seldepth << ' ';
-                                emit_score(response, iteration.value, root);
-                                response << " wdl " << wdl.win << ' '
-                                         << wdl.draw << ' ' << wdl.loss
-                                         << " nodes " << iteration.stats.nodes
-                                         << " nps " << nps
-                                         << " hashfull " << table_.hashfull()
-                                         << " time " << elapsed_ms
-                                         << " pv";
-                                for (std::size_t index = 0;
-                                     index < iteration.pv_length;
-                                     ++index) {
-                                    response << ' '
-                                             << move_to_uci(
-                                                    iteration
-                                                        .principal_variation[index],
-                                                    root.chess960()
-                                                );
-                                }
-                                response << '\n';
-                                emit(*output, response.str());
-                            };
-
-                        const SearchResult result = search(
-                            root,
-                            table_,
-                            network_,
-                            limits
+            thread_pool_.start(
+                root,
+                limits,
+                [this, fallback, root_chess960, output = &output](
+                    const SearchResult& result,
+                    std::string_view error
+                ) {
+                    if (!error.empty()) {
+                        emit(
+                            *output,
+                            "info string search failed: "
+                                + std::string(error) + "\nbestmove "
+                                + move_to_uci(fallback, root_chess960) + "\n"
                         );
-
-                        std::ostringstream response;
-                        const Move best_move = result.best_move.is_none()
-                            ? fallback
-                            : result.best_move;
-                        response << "bestmove "
-                                 << move_to_uci(best_move, root.chess960())
-                                 << '\n';
-                        emit(*output, response.str());
-                    } catch (const std::exception& error) {
-                        emit(*output,
-                             "info string search failed: "
-                                 + std::string(error.what()) + "\nbestmove "
-                                 + move_to_uci(fallback, root.chess960()) + "\n");
+                        return;
                     }
-                    search_running_.store(false, std::memory_order_release);
+
+                    std::ostringstream response;
+                    const Move best_move = result.best_move.is_none()
+                        ? fallback
+                        : result.best_move;
+                    response << "bestmove "
+                             << move_to_uci(best_move, root_chess960)
+                             << '\n';
+                    emit(*output, response.str());
                 }
             );
         } catch (const std::exception& error) {
-            search_running_.store(false, std::memory_order_release);
             emit(output, "info string could not start search: "
                        + std::string(error.what()) + "\nbestmove "
                        + move_to_uci(fallback, position_.chess960()) + "\n");
@@ -612,9 +611,7 @@ private:
     nnue::Network network_;
     std::vector<Key> prior_keys_;
     timeman::TimeManager time_manager_;
-    std::atomic_bool stop_requested_{false};
-    std::atomic_bool search_running_{false};
-    std::thread search_thread_;
+    SearchThreadPool thread_pool_;
     std::mutex output_mutex_;
     bool chess960_ = false;
 };
