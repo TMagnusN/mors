@@ -150,16 +150,29 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
     std::vector<Depth> reported_depths;
     std::uint64_t previous_reported_nodes = 0;
     bool reported_nodes_increase = true;
+    bool root_unchanged_during_callback = true;
     SearchLimits limits{.max_depth = 3};
     limits.iteration_callback = [&](const SearchResult& iteration) {
         reported_depths.push_back(iteration.completed_depth);
         if (iteration.stats.nodes <= previous_reported_nodes)
             reported_nodes_increase = false;
         previous_reported_nodes = iteration.stats.nodes;
+        root_unchanged_during_callback &=
+            position.key() == original_key
+            && position.fen() == original_fen;
     };
     const SearchResult result = search(position, table, network, limits);
 
     if (!expect(result.completed_depth == 3, "depth-three iteration must complete")
+        || !expect(result.best_move == Move::normal(E2, E4),
+                   "worker refactor must preserve the depth-three best move")
+        || !expect(result.pv_length >= 3
+                       && result.principal_variation[0] == Move::normal(E2, E4)
+                       && result.principal_variation[1] == Move::normal(E7, E5)
+                       && result.principal_variation[2] == Move::normal(G1, F3),
+                   "worker refactor must preserve the depth-three PV")
+        || !expect(result.stats.nodes == 351,
+                   "worker refactor must preserve the depth-three node count")
         || !expect(is_valid_value(result.value), "PVS result must be a valid value")
         || !expect(!result.best_move.is_none(), "PVS must return a root move")
         || !expect(result.pv_length >= 1, "PVS must return a principal variation")
@@ -176,6 +189,10 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
                    "each completed depth must be reported exactly once")
         || !expect(reported_nodes_increase,
                    "iteration reports must carry cumulative node counts")
+        || !expect(root_unchanged_during_callback,
+                   "iteration callbacks must observe the untouched root position")
+        || !expect(table.generation() == 1,
+                   "the coordinator must advance TT generation once per search")
         || !expect(result.stats.static_eval_cache_hits > 0,
                    "iterative deepening must reuse cached static evaluations")
         || !expect(position.key() == original_key && position.fen() == original_fen,
@@ -269,7 +286,9 @@ bool test_tt_reuse(const nnue::Network& network) {
         && expect(first.best_move == second.best_move,
                   "TT reuse must preserve the best move")
         && expect(second.stats.tt_hits > 0, "second search must hit the TT")
-        && expect(second.stats.tt_cutoffs > 0, "second search must use TT bounds");
+        && expect(second.stats.tt_cutoffs > 0, "second search must use TT bounds")
+        && expect(table.generation() == 2,
+                  "two coordinated searches must advance generation exactly twice");
 }
 
 bool test_node_limit(const nnue::Network& network) {

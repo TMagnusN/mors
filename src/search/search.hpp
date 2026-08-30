@@ -85,8 +85,9 @@ struct SearchResult final {
     std::size_t pv_length = 0;
 };
 
-// Runs a single-threaded iterative-deepening PVS search. The position and its
-// incremental NNUE state are restored before this function returns. The table
+// Runs an iterative-deepening PVS search through the current single-worker
+// coordinator. The root position is copied into worker-local make/unmake and
+// NNUE state, and the TT generation advances exactly once per call. The table
 // must have been resized to a non-zero size and the network must be valid.
 [[nodiscard]] SearchResult search(
     Position& position,

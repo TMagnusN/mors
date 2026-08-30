@@ -507,7 +507,21 @@ Prefetch 只是 cache hint，不可改變正確性，也不應為取得 key 重�
 
 公開檔名固定使用 `search.hpp` 與 `search.cpp`，不建立名為 `SearchWorker` 的公開類別。公開層只暴露穩定的 request/result/limits API。
 
-單執行緒第一版的可變工作狀態放在 `search.cpp` 私有 `Context`：
+公開 `search()` 目前建立一個私有 `SearchCoordinator`。Coordinator 驗證 request、
+每次 root search 只推進一次 TT generation，並決定只有 main worker 能呼叫 iteration
+callback。實際搜尋由可重用的 `SearchWorker` 執行；目前 coordinator 只配置一個 worker。
+
+```text
+public search()
+`-- SearchCoordinator
+    |-- new_search() once
+    |-- main-worker iteration callback
+    `-- SearchWorker
+        |-- private root Position copy
+        `-- per-job Context
+```
+
+每個 worker 的可變工作狀態放在 `search.cpp` 私有 `Context`：
 
 ```text
 search.cpp private Context
@@ -521,8 +535,9 @@ search.cpp private Context
 `-- limits / stop state
 ```
 
-`Context` 是實作細節，不出現在 engine/protocol 公開 header。未來 Lazy SMP 可讓每個
-thread 擁有自己的 Context，並共享目前已支援並行 probe/write 的 TT。
+`Context` 是實作細節，不出現在 engine/protocol 公開 header。Lazy SMP 可讓每個
+持久 thread 擁有一個 `SearchWorker`；每個 job 建立獨立 Context 並複製 root Position，
+只共享停止狀態、唯讀 network 與目前已支援並行 probe/write 的 TT。
 
 建議檔案責任：
 

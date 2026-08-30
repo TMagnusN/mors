@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -1197,6 +1198,134 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     return best_value;
 }
 
+// Owns the mutable state for one independent search lane. The root position is
+// copied before a job starts so future Lazy SMP workers never share make/unmake
+// state, NNUE accumulator state, histories, PV storage, or node counters.
+class SearchWorker final {
+public:
+    SearchWorker(
+        TranspositionTable& table,
+        const nnue::Network& network
+    ) noexcept
+        : table_(table), network_(network) {}
+
+    [[nodiscard]] SearchResult run(
+        const Position& root_position,
+        const SearchLimits& limits,
+        const std::function<void(const SearchResult&)>& iteration_callback
+    ) {
+        Position position = root_position;
+        Context context(position, table_, network_, limits);
+        SearchResult result;
+
+        for (Depth depth = 1; depth <= limits.max_depth; ++depth) {
+            Value alpha = -VALUE_INFINITE;
+            Value beta = VALUE_INFINITE;
+            Value delta = INITIAL_ASPIRATION_DELTA;
+
+            if (depth > 1 && result.value != VALUE_NONE) {
+                alpha = std::max(-VALUE_INFINITE, result.value - delta);
+                beta = std::min(VALUE_INFINITE, result.value + delta);
+            }
+
+            Value value = VALUE_NONE;
+            while (true) {
+                if (depth > 1)
+                    ++context.stats.aspiration_searches;
+
+                value = pvs(context, depth, alpha, beta, 0, true);
+                if (value == VALUE_NONE)
+                    break;
+
+                if (value <= alpha) {
+                    ++context.stats.aspiration_researches;
+                    alpha = std::max(-VALUE_INFINITE, alpha - delta);
+                } else if (value >= beta) {
+                    ++context.stats.aspiration_researches;
+                    beta = std::min(VALUE_INFINITE, beta + delta);
+                } else {
+                    break;
+                }
+
+                // Grow gradually so ordinary score drift keeps a tight root
+                // window, while tactical swings still converge quickly.
+                delta += delta / 2;
+            }
+            if (value == VALUE_NONE)
+                break;
+
+            result.value = value;
+            result.completed_depth = depth;
+            result.pv_length = context.pv->lengths[0];
+            assert(result.pv_length <= result.principal_variation.size());
+            std::copy_n(
+                context.pv->moves[0].begin(),
+                result.pv_length,
+                result.principal_variation.begin()
+            );
+            result.best_move = result.pv_length != 0
+                ? result.principal_variation[0]
+                : Move{};
+            result.stats = context.stats;
+
+            if (iteration_callback)
+                iteration_callback(result);
+
+            if (limits.soft_time.count() > 0
+                && std::chrono::steady_clock::now() >= context.soft_deadline) {
+                context.stopped = true;
+                break;
+            }
+        }
+
+        result.stopped = context.stopped;
+        result.stats = context.stats;
+        return result;
+    }
+
+private:
+    TranspositionTable& table_;
+    const nnue::Network& network_;
+};
+
+// Coordinates state shared by a root search. Only this layer advances the TT
+// generation and selects which worker may report iterations; helper workers
+// will receive an empty callback when the persistent pool is introduced.
+class SearchCoordinator final {
+public:
+    SearchCoordinator(
+        TranspositionTable& table,
+        const nnue::Network& network,
+        const SearchLimits& limits
+    ) noexcept
+        : table_(table),
+          network_(network),
+          limits_(limits),
+          main_worker_(table_, network_) {}
+
+    [[nodiscard]] SearchResult run(const Position& root_position) {
+        if (!network_.valid())
+            throw std::invalid_argument("search requires a valid NNUE network");
+        if (table_.cluster_count() == 0)
+            throw std::invalid_argument("search requires a non-empty transposition table");
+        if (limits_.max_depth < 1 || limits_.max_depth > MAX_PLY)
+            throw std::invalid_argument("search depth is outside the supported range");
+
+        table_.new_search();
+        return main_worker_.run(
+            root_position,
+            limits_,
+            limits_.iteration_callback
+        );
+    }
+
+private:
+    TranspositionTable& table_;
+    const nnue::Network& network_;
+    const SearchLimits& limits_;
+    SearchWorker main_worker_;
+};
+
 } // namespace
 
 SearchResult search(
@@ -1205,80 +1334,8 @@ SearchResult search(
     const nnue::Network& network,
     const SearchLimits& limits
 ) {
-    if (!network.valid())
-        throw std::invalid_argument("search requires a valid NNUE network");
-    if (table.cluster_count() == 0)
-        throw std::invalid_argument("search requires a non-empty transposition table");
-    if (limits.max_depth < 1 || limits.max_depth > MAX_PLY)
-        throw std::invalid_argument("search depth is outside the supported range");
-
-    table.new_search();
-    Context context(position, table, network, limits);
-    SearchResult result;
-
-    for (Depth depth = 1; depth <= limits.max_depth; ++depth) {
-        Value alpha = -VALUE_INFINITE;
-        Value beta = VALUE_INFINITE;
-        Value delta = INITIAL_ASPIRATION_DELTA;
-
-        if (depth > 1 && result.value != VALUE_NONE) {
-            alpha = std::max(-VALUE_INFINITE, result.value - delta);
-            beta = std::min(VALUE_INFINITE, result.value + delta);
-        }
-
-        Value value = VALUE_NONE;
-        while (true) {
-            if (depth > 1)
-                ++context.stats.aspiration_searches;
-
-            value = pvs(context, depth, alpha, beta, 0, true);
-            if (value == VALUE_NONE)
-                break;
-
-            if (value <= alpha) {
-                ++context.stats.aspiration_researches;
-                alpha = std::max(-VALUE_INFINITE, alpha - delta);
-            } else if (value >= beta) {
-                ++context.stats.aspiration_researches;
-                beta = std::min(VALUE_INFINITE, beta + delta);
-            } else {
-                break;
-            }
-
-            // Grow gradually so ordinary score drift keeps a tight root
-            // window, while tactical swings still converge quickly.
-            delta += delta / 2;
-        }
-        if (value == VALUE_NONE)
-            break;
-
-        result.value = value;
-        result.completed_depth = depth;
-        result.pv_length = context.pv->lengths[0];
-        assert(result.pv_length <= result.principal_variation.size());
-        std::copy_n(
-            context.pv->moves[0].begin(),
-            result.pv_length,
-            result.principal_variation.begin()
-        );
-        result.best_move = result.pv_length != 0
-            ? result.principal_variation[0]
-            : Move{};
-        result.stats = context.stats;
-
-        if (limits.iteration_callback)
-            limits.iteration_callback(result);
-
-        if (limits.soft_time.count() > 0
-            && std::chrono::steady_clock::now() >= context.soft_deadline) {
-            context.stopped = true;
-            break;
-        }
-    }
-
-    result.stopped = context.stopped;
-    result.stats = context.stats;
-    return result;
+    SearchCoordinator coordinator(table, network, limits);
+    return coordinator.run(position);
 }
 
 } // namespace mors
