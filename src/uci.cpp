@@ -505,7 +505,7 @@ private:
         } else {
             configuration
                 << "info string Using " << thread_count
-                << " threads (1 active search worker)\n";
+                << " threads\n";
         }
         configuration
             << "info string NNUE evaluation using " << network_name

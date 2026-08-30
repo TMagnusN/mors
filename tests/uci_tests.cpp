@@ -133,8 +133,8 @@ bool run_uci_tests() {
                            "go must report available processors")
         && expect_contains(
                text,
-               "info string Using 4 threads (1 active search worker)\n",
-               "go must report parked helper workers honestly"
+               "info string Using 4 threads\n",
+               "go must report active Lazy SMP workers"
            )
         && expect_contains(text, "info string Using 1 thread\n",
                            "pool must shrink back to one worker")

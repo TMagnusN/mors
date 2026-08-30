@@ -305,10 +305,6 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
     if (!expect(pool.size() == 1, "thread pool must start with one worker"))
         return false;
 
-    pool.resize(4);
-    if (!expect(pool.size() == 4, "thread pool must grow while idle"))
-        return false;
-
     SearchResult completed;
     std::string completion_error;
     std::size_t completion_count = 0;
@@ -337,6 +333,36 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
         || !expect(parsed->key() == original_key
                        && parsed->fen() == original_fen,
                    "pool search must leave the caller root untouched")) {
+        return false;
+    }
+
+    pool.resize(4);
+    if (!expect(pool.size() == 4, "thread pool must grow while idle"))
+        return false;
+
+    completion_error.clear();
+    pool.start(
+        *parsed,
+        SearchLimits{
+            .max_depth = MAX_PLY,
+            .max_nodes = 1'000
+        },
+        [&](const SearchResult& result, std::string_view error) {
+            completed = result;
+            completion_error = error;
+            ++completion_count;
+        }
+    );
+    pool.wait();
+    if (!expect(completion_count == 2 && completion_error.empty(),
+                "Lazy SMP job must report one successful completion")
+        || !expect(completed.stopped && completed.stats.nodes == 1'000,
+                   "all workers must share one exact global node budget")
+        || !expect(table.generation() == 2,
+                   "multi-worker jobs must advance TT generation only once")
+        || !expect(parsed->key() == original_key
+                       && parsed->fen() == original_fen,
+                   "Lazy SMP workers must use isolated root copies")) {
         return false;
     }
 
@@ -369,7 +395,7 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
                 "thread pool must reject resize during an active job")
         || !expect(stopped_completion && stopped_result,
                    "pool-owned cancellation must report one normal completion")
-        || !expect(table.generation() == 2,
+        || !expect(table.generation() == 3,
                    "stopped pool jobs must still advance TT generation once")) {
         return false;
     }
@@ -381,7 +407,7 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
             SearchLimits{.max_depth = MAX_PLY}
         );
     }
-    return expect(table.generation() == 3,
+    return expect(table.generation() == 4,
                   "pool destruction must stop and join an active job");
 }
 

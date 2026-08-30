@@ -89,11 +89,12 @@ struct SearchResult final {
 
 inline constexpr std::size_t MAX_SEARCH_THREADS = 256;
 
-// Owns a persistent set of search threads. Jobs are asynchronous: the main
-// worker performs the coordinated search and invokes the completion callback,
-// while helper workers remain parked until Lazy SMP is enabled. resize() and
-// start() must only be called while no job is active. The pool owns async
-// cancellation after start(); callers stop a job through request_stop().
+// Owns a persistent set of Lazy SMP search threads. Jobs are asynchronous:
+// every worker searches an isolated root copy while sharing the TT and stop
+// state. The main worker remains authoritative for iteration reports and the
+// final result. resize() and start() must only be called while no job is active.
+// The pool owns async cancellation after start(); callers stop a job through
+// request_stop().
 class SearchThreadPool final {
 public:
     using CompletionCallback =

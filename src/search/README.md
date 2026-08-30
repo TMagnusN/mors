@@ -508,10 +508,10 @@ Prefetch 只是 cache hint，不可改變正確性，也不應為取得 key 重�
 公開檔名固定使用 `search.hpp` 與 `search.cpp`，不建立名為 `SearchWorker` 的公開類別。公開層只暴露穩定的 request/result/limits API。
 
 同步公開 `search()` 建立一個私有 `SearchCoordinator` 與 main `SearchWorker`。
-UCI 則持有公開的 `SearchThreadPool`：所有 OS thread 跨 `go` 常駐，main thread
-接收非同步 job，helper thread 目前只追蹤 job generation 後繼續等待。Coordinator
-驗證 request、每次 root search 只推進一次 TT generation，並決定只有 main worker
-能呼叫 iteration callback。
+UCI 則持有公開的 `SearchThreadPool`：所有 OS thread 跨 `go` 常駐並以 barrier
+同步開始同一個 Lazy SMP job。每個 thread 擁有自己的 `SearchWorker`、root copy
+與 Context，只共享 TT、停止狀態和全域 node budget。Pool 每個 job 只推進一次 TT
+generation，只有 main worker 能呼叫 iteration callback 並決定最終結果。
 
 ```text
 public search()
@@ -524,8 +524,8 @@ public search()
 
 UCI SearchThreadPool
 |-- persistent main thread
-|   `-- SearchWorker -> SearchCoordinator -> per-job Context
-`-- persistent helper threads (parked until Lazy SMP)
+|   `-- SearchWorker -> per-job Context
+`-- persistent helper threads -> independent per-job Contexts
 ```
 
 每個 worker 的可變工作狀態放在 `search.cpp` 私有 `Context`：
@@ -543,9 +543,11 @@ search.cpp private Context
 ```
 
 `Context` 是實作細節，不出現在 engine/protocol 公開 header。每個 persistent
-thread 已擁有一個私有 `SearchWorker`；目前只有 main worker 為 job 建立 Context。
-Lazy SMP 啟用後，每個 helper 也會建立獨立 Context 並複製 root Position，只共享停止
-狀態、唯讀 network 與目前已支援並行 probe/write 的 TT。
+thread 擁有一個私有 `SearchWorker`，每個 job 都建立獨立 Context 並複製 root
+Position。所有 worker 從 depth 1 進行 iterative deepening，並依 worker index 使用
+略微不同的 aspiration delta；所有 worker 只共享停止狀態、全域 node budget、唯讀
+network 與支援並行 probe/write 的 TT。
+Main 完成後會發布停止，pool 等全部 helper 回到 idle 才送出 completion callback。
 
 建議檔案責任：
 
@@ -566,7 +568,10 @@ lane 的 busy sentinel 取得 slot，再發布完整 payload 與最終 signature
 `TTWriter` 仍保存 cluster 指標與 slot，`resize()` / `clear()` 仍會使它失效。因此這
 兩個操作不是搜尋期操作：engine 必須先發出 stop 並等待 ThreadPool 回到 idle，才能
 清空或替換 table storage。ThreadPool 本身也只允許在 idle 狀態 resize。一次 root
-search 只由 coordinator 呼叫一次 `new_search()`；worker 不應各自增加 generation。
+search 只由 job orchestration layer 呼叫一次 `new_search()`；worker 不應各自增加
+generation。
+Node-limited job 以原子 compare/exchange 共用精確 budget；一般 time/depth job 則讓
+每個 worker 發布自己的 local node counter，UCI iteration 與最終結果回報其總和。
 
 ## 參考結論
 

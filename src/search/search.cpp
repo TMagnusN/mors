@@ -81,17 +81,27 @@ using QuietHistory = std::array<
 using KillerMoves = std::array<std::array<Move, 2>, MAX_PLY>;
 using CounterMoves = std::array<std::array<Move, 64>, 64>;
 
+struct WorkerControl final {
+    std::atomic<std::uint64_t>* published_nodes = nullptr;
+    std::atomic<std::uint64_t>* shared_node_count = nullptr;
+    std::atomic_bool* shared_stop = nullptr;
+    std::uint64_t shared_node_limit =
+        std::numeric_limits<std::uint64_t>::max();
+};
+
 struct Context final {
     Context(
         Position& current_position,
         TranspositionTable& current_table,
         const nnue::Network& current_network,
-        const SearchLimits& current_limits
+        const SearchLimits& current_limits,
+        WorkerControl* current_worker_control = nullptr
     )
         : position(current_position),
           table(current_table),
           network(current_network),
           limits(current_limits),
+          worker_control(current_worker_control),
           pv(std::make_unique<PvTable>()) {
         keys.reserve(current_limits.prior_keys.size() + MAX_PLY + 1);
         keys.insert(
@@ -108,6 +118,7 @@ struct Context final {
     TranspositionTable& table;
     const nnue::Network& network;
     const SearchLimits& limits;
+    WorkerControl* worker_control = nullptr;
     nnue::Worker evaluator;
     std::unique_ptr<PvTable> pv;
     std::vector<Key> keys;
@@ -183,7 +194,8 @@ private:
         context.stopped = true;
         return false;
     }
-    if (context.stats.nodes >= context.limits.max_nodes) {
+    if (context.worker_control == nullptr
+        && context.stats.nodes >= context.limits.max_nodes) {
         context.stopped = true;
         return false;
     }
@@ -197,7 +209,40 @@ private:
         return false;
     }
 
+    if (context.worker_control != nullptr
+        && context.worker_control->shared_node_count != nullptr) {
+        std::atomic<std::uint64_t>& shared_nodes =
+            *context.worker_control->shared_node_count;
+        std::uint64_t node_count =
+            shared_nodes.load(std::memory_order_relaxed);
+        while (node_count < context.worker_control->shared_node_limit
+               && !shared_nodes.compare_exchange_weak(
+                   node_count,
+                   node_count + 1,
+                   std::memory_order_relaxed,
+                   std::memory_order_relaxed
+               )) {}
+        if (node_count >= context.worker_control->shared_node_limit) {
+            if (context.worker_control->shared_stop != nullptr) {
+                context.worker_control->shared_stop->store(
+                    true,
+                    std::memory_order_release
+                );
+            }
+            context.stopped = true;
+            return false;
+        }
+    }
+
     ++context.stats.nodes;
+    if (context.worker_control != nullptr
+        && context.worker_control->published_nodes != nullptr
+        && (context.stats.nodes & 63U) == 0) {
+        context.worker_control->published_nodes->store(
+            context.stats.nodes,
+            std::memory_order_relaxed
+        );
+    }
     if (qnode)
         ++context.stats.qnodes;
     context.stats.seldepth = std::max(context.stats.seldepth, ply);
@@ -1220,16 +1265,25 @@ public:
     [[nodiscard]] SearchResult run(
         const Position& root_position,
         const SearchLimits& limits,
-        const std::function<void(const SearchResult&)>& iteration_callback
+        const std::function<void(const SearchResult&)>& iteration_callback,
+        std::size_t worker_index = 0,
+        WorkerControl* worker_control = nullptr
     ) {
         Position position = root_position;
-        Context context(position, table_, network_, limits);
+        Context context(
+            position,
+            table_,
+            network_,
+            limits,
+            worker_control
+        );
         SearchResult result;
 
         for (Depth depth = 1; depth <= limits.max_depth; ++depth) {
             Value alpha = -VALUE_INFINITE;
             Value beta = VALUE_INFINITE;
-            Value delta = INITIAL_ASPIRATION_DELTA;
+            Value delta = INITIAL_ASPIRATION_DELTA
+                + static_cast<Value>(worker_index % 8);
 
             if (depth > 1 && result.value != VALUE_NONE) {
                 alpha = std::max(-VALUE_INFINITE, result.value - delta);
@@ -1276,6 +1330,13 @@ public:
                 : Move{};
             result.stats = context.stats;
 
+            if (worker_control != nullptr
+                && worker_control->published_nodes != nullptr) {
+                worker_control->published_nodes->store(
+                    context.stats.nodes,
+                    std::memory_order_relaxed
+                );
+            }
             if (iteration_callback)
                 iteration_callback(result);
 
@@ -1288,6 +1349,13 @@ public:
 
         result.stopped = context.stopped;
         result.stats = context.stats;
+        if (worker_control != nullptr
+            && worker_control->published_nodes != nullptr) {
+            worker_control->published_nodes->store(
+                context.stats.nodes,
+                std::memory_order_relaxed
+            );
+        }
         return result;
     }
 
@@ -1422,8 +1490,10 @@ public:
                 root_position,
                 limits,
                 stop_requested_,
+                threads_.size(),
                 std::move(completion_callback)
             );
+            table_.new_search();
             active_ = true;
             ++job_generation_;
         }
@@ -1445,17 +1515,29 @@ public:
     }
 
 private:
+    struct alignas(64) WorkerSharedState final {
+        std::atomic<std::uint64_t> nodes{0};
+    };
+
     struct Job final {
         Job(
             const Position& root_position,
             const SearchLimits& requested_limits,
             std::atomic_bool& job_stop,
+            std::size_t requested_worker_count,
             CompletionCallback requested_completion
         )
             : root(root_position),
               prior_keys(requested_limits.prior_keys.size()),
               limits(requested_limits),
-              completion(std::move(requested_completion)) {
+              completion(std::move(requested_completion)),
+              worker_states(
+                  std::make_unique<WorkerSharedState[]>(
+                      requested_worker_count
+                  )
+              ),
+              worker_count(requested_worker_count),
+              remaining_workers(requested_worker_count) {
             if (!prior_keys.empty()) {
                 std::copy(
                     requested_limits.prior_keys.begin(),
@@ -1471,7 +1553,32 @@ private:
         std::vector<Key> prior_keys;
         SearchLimits limits;
         CompletionCallback completion;
+        std::unique_ptr<WorkerSharedState[]> worker_states;
+        std::atomic<std::uint64_t> shared_node_count{0};
+        SearchResult main_result;
+        std::string error;
+        std::size_t worker_count = 0;
+        std::size_t arrived_workers = 0;
+        std::size_t remaining_workers = 0;
+        bool main_finished = false;
     };
+
+    [[nodiscard]] static std::uint64_t total_nodes(
+        const Job& job
+    ) noexcept {
+        if (job.limits.max_nodes
+            != std::numeric_limits<std::uint64_t>::max()) {
+            return job.shared_node_count.load(std::memory_order_relaxed);
+        }
+
+        std::uint64_t nodes = 0;
+        for (std::size_t index = 0; index < job.worker_count; ++index) {
+            nodes += job.worker_states[index].nodes.load(
+                std::memory_order_relaxed
+            );
+        }
+        return nodes;
+    }
 
     void restart_threads(std::size_t thread_count) {
         std::vector<std::thread> retiring;
@@ -1557,36 +1664,108 @@ private:
                     return;
 
                 observed_generation = job_generation_;
-                if (worker_index != 0)
-                    continue;
-
                 assert(active_);
                 assert(job_.has_value());
+                assert(worker_index < job_->worker_count);
+                ++job_->arrived_workers;
+                if (job_->arrived_workers == job_->worker_count) {
+                    start_cv_.notify_all();
+                } else {
+                    start_cv_.wait(lock, [this, observed_generation] {
+                        return shutting_down_
+                            || job_generation_ != observed_generation
+                            || (job_.has_value()
+                                && job_->arrived_workers
+                                    == job_->worker_count);
+                    });
+                    if (shutting_down_)
+                        return;
+                }
                 job = &*job_;
+            }
+
+            SearchLimits worker_limits = job->limits;
+            worker_limits.iteration_callback = {};
+            WorkerControl worker_control{
+                .published_nodes =
+                    &job->worker_states[worker_index].nodes,
+                .shared_node_count =
+                    job->limits.max_nodes
+                        == std::numeric_limits<std::uint64_t>::max()
+                    ? nullptr
+                    : &job->shared_node_count,
+                .shared_stop = &stop_requested_,
+                .shared_node_limit = job->limits.max_nodes
+            };
+
+            std::function<void(const SearchResult&)> iteration_callback;
+            if (worker_index == 0 && job->limits.iteration_callback) {
+                iteration_callback =
+                    [this, job](const SearchResult& iteration) {
+                        SearchResult aggregate = iteration;
+                        aggregate.stats.nodes = total_nodes(*job);
+                        job->limits.iteration_callback(aggregate);
+                    };
             }
 
             SearchResult result;
             std::string error;
             try {
-                SearchCoordinator coordinator(
-                    table_,
-                    network_,
-                    job->limits,
-                    worker
+                result = worker.run(
+                    job->root,
+                    worker_limits,
+                    iteration_callback,
+                    worker_index,
+                    &worker_control
                 );
-                result = coordinator.run(job->root);
             } catch (const std::exception& exception) {
                 error = exception.what();
             } catch (...) {
                 error = "unknown search failure";
             }
 
+            CompletionCallback completion;
+            SearchResult completed_result;
+            std::string completion_error;
+            bool finalize = false;
+
+            {
+                const std::lock_guard lock(mutex_);
+                assert(job_generation_ == observed_generation);
+                assert(job_.has_value());
+                if (!error.empty() && job_->error.empty()) {
+                    job_->error = "worker "
+                        + std::to_string(worker_index)
+                        + ": " + error;
+                    stop_requested_.store(true, std::memory_order_release);
+                }
+                if (worker_index == 0) {
+                    job_->main_result = result;
+                    job_->main_finished = true;
+                    stop_requested_.store(true, std::memory_order_release);
+                }
+
+                assert(job_->remaining_workers > 0);
+                --job_->remaining_workers;
+                if (job_->remaining_workers == 0) {
+                    assert(job_->main_finished);
+                    job_->main_result.stats.nodes = total_nodes(*job_);
+                    completed_result = job_->main_result;
+                    completion = std::move(job_->completion);
+                    completion_error = std::move(job_->error);
+                    finalize = true;
+                }
+            }
+
+            if (!finalize)
+                continue;
+
             try {
-                if (job->completion)
-                    job->completion(result, error);
+                if (completion)
+                    completion(completed_result, completion_error);
             } catch (...) {
                 // Completion callbacks are external reporting hooks. A faulty
-                // reporter must not strand the persistent worker in busy state.
+                // reporter must not strand the persistent pool in busy state.
             }
 
             {
@@ -1603,6 +1782,7 @@ private:
     const nnue::Network& network_;
     mutable std::mutex mutex_;
     std::condition_variable job_cv_;
+    std::condition_variable start_cv_;
     std::condition_variable idle_cv_;
     std::vector<std::thread> threads_;
     std::optional<Job> job_;
