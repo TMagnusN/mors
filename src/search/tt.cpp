@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -29,11 +30,21 @@ inline constexpr int AGE_PENALTY = 8;
 inline constexpr int DEPTH_MARGIN = 4;
 inline constexpr int PV_DEPTH_BONUS = 2;
 
+inline constexpr std::uint16_t EMPTY_SIGNATURE = 0;
+inline constexpr std::uint16_t BUSY_SIGNATURE = 0xFFFF;
 inline constexpr std::uint64_t LANE_ONES = 0x0001'0001'0001'0001ULL;
 inline constexpr std::uint64_t LANE_HIGHS = 0x8000'8000'8000'8000ULL;
 
 [[nodiscard]] constexpr std::uint16_t signature_of(Key key) noexcept {
-    return static_cast<std::uint16_t>(key);
+    const std::uint16_t signature = static_cast<std::uint16_t>(key);
+    // Zero marks an empty lane and 0xFFFF marks a writer-owned lane. Folding
+    // those two values into neighboring signatures costs two verification
+    // values but keeps publication inside the existing 32-byte cluster.
+    if (signature == EMPTY_SIGNATURE)
+        return 1;
+    if (signature == BUSY_SIGNATURE)
+        return BUSY_SIGNATURE - 1;
+    return signature;
 }
 
 [[nodiscard]] constexpr std::uint8_t encode_depth(Depth depth) noexcept {
@@ -83,75 +94,150 @@ inline constexpr std::uint64_t LANE_HIGHS = 0x8000'8000'8000'8000ULL;
         && value <= std::numeric_limits<std::int16_t>::max();
 }
 
+[[nodiscard]] constexpr std::uint16_t lane(
+    std::uint64_t signatures,
+    std::size_t slot
+) noexcept {
+    assert(slot < ENTRIES_PER_CLUSTER);
+    return static_cast<std::uint16_t>(signatures >> (slot * 16));
+}
+
+[[nodiscard]] constexpr std::uint64_t set_lane(
+    std::uint64_t signatures,
+    std::size_t slot,
+    std::uint16_t signature
+) noexcept {
+    assert(slot < ENTRIES_PER_CLUSTER);
+    const unsigned shift = static_cast<unsigned>(slot * 16);
+    const std::uint64_t mask = 0xFFFFULL << shift;
+    return (signatures & ~mask)
+         | (static_cast<std::uint64_t>(signature) << shift);
+}
+
+[[nodiscard]] constexpr std::uint64_t matching_lanes(
+    std::uint64_t signatures,
+    std::uint16_t signature
+) noexcept {
+    const std::uint64_t needle = static_cast<std::uint64_t>(signature) * LANE_ONES;
+    const std::uint64_t difference = signatures ^ needle;
+    return (difference - LANE_ONES) & ~difference & LANE_HIGHS;
+}
+
+[[nodiscard]] constexpr std::uint64_t pack_entry(
+    const TTData& data,
+    std::uint8_t generation
+) noexcept {
+    return static_cast<std::uint64_t>(data.move.raw())
+         | (static_cast<std::uint64_t>(
+                static_cast<std::uint16_t>(static_cast<std::int16_t>(data.value))
+            ) << 16)
+         | (static_cast<std::uint64_t>(
+                static_cast<std::uint16_t>(static_cast<std::int16_t>(data.static_eval))
+            ) << 32)
+         | (static_cast<std::uint64_t>(encode_depth(data.depth)) << 48)
+         | (static_cast<std::uint64_t>(
+                pack_flags(data.bound, data.pv, generation)
+            ) << 56);
+}
+
+[[nodiscard]] constexpr TTData unpack_entry(std::uint64_t payload) noexcept {
+    const std::uint16_t move = static_cast<std::uint16_t>(payload);
+    const std::uint8_t depth = static_cast<std::uint8_t>(payload >> 48);
+    const std::uint8_t flags = static_cast<std::uint8_t>(payload >> 56);
+    return {
+        .move = std::bit_cast<Move>(move),
+        .value = static_cast<Value>(
+            static_cast<std::int16_t>(static_cast<std::uint16_t>(payload >> 16))
+        ),
+        .static_eval = static_cast<Value>(
+            static_cast<std::int16_t>(static_cast<std::uint16_t>(payload >> 32))
+        ),
+        .depth = decode_depth(depth),
+        .bound = unpack_bound(flags),
+        .pv = unpack_pv(flags)
+    };
+}
+
+[[nodiscard]] constexpr bool occupied(std::uint64_t payload) noexcept {
+    return static_cast<std::uint8_t>(payload >> 48) != 0;
+}
+
 } // namespace
 
 namespace detail {
 
-struct TTEntryData final {
-    Move move{};
-    std::int16_t value = 0;
-    std::int16_t static_eval = 0;
-    std::uint8_t depth = 0;
-    std::uint8_t flags = 0;
-
-    [[nodiscard]] constexpr bool occupied() const noexcept {
-        return depth != 0;
-    }
-
-    [[nodiscard]] constexpr TTData read() const noexcept {
-        return {
-            .move = move,
-            .value = static_cast<Value>(value),
-            .static_eval = static_cast<Value>(static_eval),
-            .depth = decode_depth(depth),
-            .bound = unpack_bound(flags),
-            .pv = unpack_pv(flags)
-        };
-    }
-};
-
-static_assert(sizeof(TTEntryData) == 8);
-static_assert(std::is_trivially_copyable_v<TTEntryData>);
-
 struct alignas(32) TTCluster final {
-    // Three independent eight-byte payloads followed by three packed 16-bit
-    // signatures. The unused fourth signature lane is the SWAR lookup guard.
-    std::array<TTEntryData, ENTRIES_PER_CLUSTER> entries{};
-    std::uint64_t signatures = 0;
-
-    [[nodiscard]] constexpr std::uint16_t signature(std::size_t slot) const noexcept {
-        assert(slot < ENTRIES_PER_CLUSTER);
-        return static_cast<std::uint16_t>(signatures >> (slot * 16));
+    TTCluster() noexcept {
+        for (std::atomic<std::uint64_t>& entry : entries)
+            entry.store(0, std::memory_order_relaxed);
+        signatures.store(0, std::memory_order_relaxed);
     }
 
-    constexpr void set_signature(std::size_t slot, std::uint16_t value) noexcept {
-        assert(slot < ENTRIES_PER_CLUSTER);
-        const unsigned shift = static_cast<unsigned>(slot * 16);
-        const std::uint64_t mask = 0xFFFFULL << shift;
-        signatures = (signatures & ~mask) | (static_cast<std::uint64_t>(value) << shift);
-    }
-
-    [[nodiscard]] constexpr std::uint64_t matching_lanes(std::uint16_t value) const noexcept {
-        const std::uint64_t needle = static_cast<std::uint64_t>(value) * LANE_ONES;
-        const std::uint64_t difference = signatures ^ needle;
-        return (difference - LANE_ONES) & ~difference & LANE_HIGHS;
-    }
+    // A writer claims one 16-bit signature lane with BUSY_SIGNATURE, stores
+    // the complete 64-bit payload, then publishes the final signature with a
+    // release CAS. Readers verify the lane before and after loading payload.
+    std::array<std::atomic<std::uint64_t>, ENTRIES_PER_CLUSTER> entries;
+    std::atomic<std::uint64_t> signatures;
 };
 
 static_assert(sizeof(TTCluster) == 32);
 static_assert(alignof(TTCluster) == 32);
-static_assert(std::is_trivially_copyable_v<TTCluster>);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
 } // namespace detail
+
+namespace {
+
+[[nodiscard]] bool claim_slot(
+    detail::TTCluster& cluster,
+    std::size_t slot,
+    std::uint16_t expected_signature
+) noexcept {
+    std::uint64_t expected = cluster.signatures.load(std::memory_order_acquire);
+    while (lane(expected, slot) == expected_signature) {
+        const std::uint64_t desired = set_lane(expected, slot, BUSY_SIGNATURE);
+        if (cluster.signatures.compare_exchange_weak(
+                expected,
+                desired,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void publish_slot(
+    detail::TTCluster& cluster,
+    std::size_t slot,
+    std::uint16_t signature
+) noexcept {
+    std::uint64_t expected = cluster.signatures.load(std::memory_order_relaxed);
+    while (lane(expected, slot) == BUSY_SIGNATURE) {
+        const std::uint64_t desired = set_lane(expected, slot, signature);
+        if (cluster.signatures.compare_exchange_weak(
+                expected,
+                desired,
+                std::memory_order_release,
+                std::memory_order_relaxed)) {
+            return;
+        }
+    }
+    assert(false && "TT writer lost ownership of its signature lane");
+}
+
+} // namespace
 
 TTWriter::TTWriter(
     detail::TTCluster* cluster,
     std::uint8_t slot,
     std::uint16_t signature,
+    std::uint16_t expected_signature,
     std::uint8_t generation
 ) noexcept
     : cluster_(cluster),
       signature_(signature),
+      expected_signature_(expected_signature),
       slot_(slot),
       generation_(generation) {}
 
@@ -162,35 +248,55 @@ void TTWriter::write(const TTData& data, bool force) const noexcept {
     assert(data.depth <= DEPTH_ENTRY_OFFSET + std::numeric_limits<std::uint8_t>::max());
     assert(fits_entry(data.value) && fits_entry(data.static_eval));
 
-    detail::TTEntryData& entry = cluster_->entries[slot_];
-    const bool same_position = entry.occupied()
-                            && cluster_->signature(slot_) == signature_;
-    const std::uint8_t age = entry.occupied()
-        ? relative_age(generation_, unpack_generation(entry.flags))
+    if (!claim_slot(*cluster_, slot_, expected_signature_))
+        return;
+
+    const std::uint64_t old_payload = cluster_->entries[slot_].load(
+        std::memory_order_relaxed
+    );
+    const bool has_old_entry = occupied(old_payload);
+    const bool same_position = has_old_entry
+                            && expected_signature_ == signature_;
+    const TTData old_data = has_old_entry ? unpack_entry(old_payload) : TTData{};
+    const std::uint8_t old_flags = static_cast<std::uint8_t>(old_payload >> 56);
+    const std::uint8_t age = has_old_entry
+        ? relative_age(generation_, unpack_generation(old_flags))
         : GENERATION_MASK;
 
     Move stored_move = data.move;
     if (same_position && stored_move.is_none())
-        stored_move = entry.move;
+        stored_move = old_data.move;
 
     if (!force
         && same_position
         && data.bound != BOUND_EXACT
         && age == 0
-        && data.depth + DEPTH_MARGIN + (data.pv ? PV_DEPTH_BONUS : 0) <= decode_depth(entry.depth)) {
-        if (!data.move.is_none())
-            entry.move = data.move;
+        && data.depth + DEPTH_MARGIN + (data.pv ? PV_DEPTH_BONUS : 0) <= old_data.depth) {
+        if (!data.move.is_none()) {
+            TTData move_update = old_data;
+            move_update.move = data.move;
+            cluster_->entries[slot_].store(
+                pack_entry(move_update, unpack_generation(old_flags)),
+                std::memory_order_relaxed
+            );
+        }
+        publish_slot(*cluster_, slot_, signature_);
         return;
     }
 
-    entry = {
+    const TTData replacement{
         .move = stored_move,
-        .value = static_cast<std::int16_t>(data.value),
-        .static_eval = static_cast<std::int16_t>(data.static_eval),
-        .depth = encode_depth(data.depth),
-        .flags = pack_flags(data.bound, data.pv, generation_)
+        .value = data.value,
+        .static_eval = data.static_eval,
+        .depth = data.depth,
+        .bound = data.bound,
+        .pv = data.pv
     };
-    cluster_->set_signature(slot_, signature_);
+    cluster_->entries[slot_].store(
+        pack_entry(replacement, generation_),
+        std::memory_order_relaxed
+    );
+    publish_slot(*cluster_, slot_, signature_);
 }
 
 TranspositionTable::TranspositionTable() noexcept = default;
@@ -209,22 +315,35 @@ void TranspositionTable::resize(std::size_t megabytes) {
 
     const std::size_t bytes = megabytes * BYTES_PER_MEGABYTE;
     const std::size_t count = bytes / sizeof(detail::TTCluster);
-    auto replacement = std::make_unique_for_overwrite<detail::TTCluster[]>(count);
-    std::fill_n(replacement.get(), count, detail::TTCluster{});
+    auto replacement = std::make_unique<detail::TTCluster[]>(count);
 
     table_ = std::move(replacement);
     cluster_count_ = count;
-    generation_ = 0;
+    generation_.store(0, std::memory_order_relaxed);
 }
 
 void TranspositionTable::clear() noexcept {
-    if (table_)
-        std::fill_n(table_.get(), cluster_count_, detail::TTCluster{});
-    generation_ = 0;
+    if (table_) {
+        for (std::size_t cluster_index = 0;
+             cluster_index < cluster_count_;
+             ++cluster_index) {
+            detail::TTCluster& cluster = table_[cluster_index];
+            for (std::atomic<std::uint64_t>& entry : cluster.entries)
+                entry.store(0, std::memory_order_relaxed);
+            cluster.signatures.store(0, std::memory_order_relaxed);
+        }
+    }
+    generation_.store(0, std::memory_order_relaxed);
 }
 
 void TranspositionTable::new_search() noexcept {
-    generation_ = static_cast<std::uint8_t>((generation_ + 1) & GENERATION_MASK);
+    std::uint8_t current = generation_.load(std::memory_order_relaxed);
+    while (!generation_.compare_exchange_weak(
+        current,
+        static_cast<std::uint8_t>((current + 1) & GENERATION_MASK),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed
+    )) {}
 }
 
 std::size_t TranspositionTable::index(Key key) const noexcept {
@@ -249,59 +368,102 @@ TTProbe TranspositionTable::probe(Key key) noexcept {
     assert(table_ && cluster_count_ != 0);
     detail::TTCluster& cluster = table_[index(key)];
     const std::uint16_t signature = signature_of(key);
+    const std::uint8_t generation = generation_.load(std::memory_order_relaxed);
 
-    std::uint64_t matches = cluster.matching_lanes(signature);
-    while (matches != 0) {
-        const int bit = std::countr_zero(matches);
-        matches &= matches - 1;
-        const std::size_t slot = static_cast<std::size_t>(bit) / 16;
+    for (;;) {
+        const std::uint64_t signatures = cluster.signatures.load(
+            std::memory_order_acquire
+        );
+        std::uint64_t matches = matching_lanes(signatures, signature);
+        bool retry = false;
+        while (matches != 0) {
+            const int bit = std::countr_zero(matches);
+            matches &= matches - 1;
+            const std::size_t slot = static_cast<std::size_t>(bit) / 16;
+            if (slot >= ENTRIES_PER_CLUSTER)
+                continue;
 
-        if (slot < ENTRIES_PER_CLUSTER
-            && cluster.signature(slot) == signature
-            && cluster.entries[slot].occupied()) {
-            return {
-                .hit = true,
-                .data = cluster.entries[slot].read(),
-                .writer = TTWriter(
-                    &cluster,
-                    static_cast<std::uint8_t>(slot),
-                    signature,
-                    generation_
-                )
-            };
+            const std::uint64_t payload = cluster.entries[slot].load(
+                std::memory_order_acquire
+            );
+            const std::uint16_t after = lane(
+                cluster.signatures.load(std::memory_order_acquire),
+                slot
+            );
+            if (after != signature) {
+                retry = true;
+                break;
+            }
+            if (occupied(payload)) {
+                return {
+                    .hit = true,
+                    .data = unpack_entry(payload),
+                    .writer = TTWriter(
+                        &cluster,
+                        static_cast<std::uint8_t>(slot),
+                        signature,
+                        signature,
+                        generation
+                    )
+                };
+            }
         }
+        if (retry)
+            continue;
+
+        std::size_t replacement = ENTRIES_PER_CLUSTER;
+        std::uint16_t replacement_signature = EMPTY_SIGNATURE;
+        int lowest_quality = std::numeric_limits<int>::max();
+        for (std::size_t slot = 0; slot < ENTRIES_PER_CLUSTER; ++slot) {
+            const std::uint16_t before = lane(signatures, slot);
+            if (before == BUSY_SIGNATURE)
+                continue;
+
+            const std::uint64_t payload = cluster.entries[slot].load(
+                std::memory_order_acquire
+            );
+            const std::uint16_t after = lane(
+                cluster.signatures.load(std::memory_order_acquire),
+                slot
+            );
+            if (after != before) {
+                retry = true;
+                break;
+            }
+            if (before == EMPTY_SIGNATURE || !occupied(payload)) {
+                replacement = slot;
+                replacement_signature = before;
+                break;
+            }
+
+            const TTData candidate = unpack_entry(payload);
+            const std::uint8_t flags = static_cast<std::uint8_t>(payload >> 56);
+            const int quality = candidate.depth
+                              - AGE_PENALTY * relative_age(
+                                    generation,
+                                    unpack_generation(flags)
+                                );
+            if (quality < lowest_quality) {
+                lowest_quality = quality;
+                replacement = slot;
+                replacement_signature = before;
+            }
+        }
+        if (retry || replacement == ENTRIES_PER_CLUSTER)
+            continue;
+
+        return {
+            .hit = false,
+            .data = {},
+            .writer = TTWriter(
+                &cluster,
+                static_cast<std::uint8_t>(replacement),
+                signature,
+                replacement_signature,
+                generation
+            )
+        };
     }
-
-    std::size_t replacement = 0;
-    int lowest_quality = std::numeric_limits<int>::max();
-    for (std::size_t slot = 0; slot < ENTRIES_PER_CLUSTER; ++slot) {
-        const detail::TTEntryData& candidate = cluster.entries[slot];
-        if (!candidate.occupied()) {
-            replacement = slot;
-            break;
-        }
-
-        const int quality = decode_depth(candidate.depth)
-                          - AGE_PENALTY * relative_age(
-                                generation_,
-                                unpack_generation(candidate.flags)
-                            );
-        if (quality < lowest_quality) {
-            lowest_quality = quality;
-            replacement = slot;
-        }
-    }
-
-    return {
-        .hit = false,
-        .data = {},
-        .writer = TTWriter(
-            &cluster,
-            static_cast<std::uint8_t>(replacement),
-            signature,
-            generation_
-        )
-    };
 }
 
 void TranspositionTable::prefetch(Key key) const noexcept {
@@ -317,17 +479,34 @@ int TranspositionTable::hashfull() const noexcept {
     if (!table_ || cluster_count_ == 0)
         return 0;
 
+    const std::uint8_t generation = generation_.load(std::memory_order_relaxed);
     const std::size_t sample_clusters = std::min<std::size_t>(cluster_count_, 1000);
-    std::size_t occupied = 0;
+    std::size_t occupied_count = 0;
     for (std::size_t cluster_index = 0; cluster_index < sample_clusters; ++cluster_index) {
-        for (const detail::TTEntryData& entry : table_[cluster_index].entries) {
-            occupied += entry.occupied()
-                     && unpack_generation(entry.flags) == generation_;
+        const detail::TTCluster& cluster = table_[cluster_index];
+        const std::uint64_t signatures = cluster.signatures.load(
+            std::memory_order_acquire
+        );
+        for (std::size_t slot = 0; slot < ENTRIES_PER_CLUSTER; ++slot) {
+            const std::uint16_t before = lane(signatures, slot);
+            if (before == EMPTY_SIGNATURE || before == BUSY_SIGNATURE)
+                continue;
+            const std::uint64_t payload = cluster.entries[slot].load(
+                std::memory_order_acquire
+            );
+            const std::uint16_t after = lane(
+                cluster.signatures.load(std::memory_order_acquire),
+                slot
+            );
+            if (after != before || !occupied(payload))
+                continue;
+            const std::uint8_t flags = static_cast<std::uint8_t>(payload >> 56);
+            occupied_count += unpack_generation(flags) == generation;
         }
     }
 
     return static_cast<int>(
-        occupied * 1000 / (sample_clusters * ENTRIES_PER_CLUSTER)
+        occupied_count * 1000 / (sample_clusters * ENTRIES_PER_CLUSTER)
     );
 }
 

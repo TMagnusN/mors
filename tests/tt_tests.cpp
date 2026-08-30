@@ -4,9 +4,13 @@
 
 #include "search/tt.hpp"
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -62,6 +66,7 @@ bool test_round_trip() {
 bool test_zero_signature_and_empty_entries() {
     TranspositionTable table(1);
     constexpr Key zero_signature = 0x1357'9BDF'2468'0000ULL;
+    constexpr Key busy_signature = 0x2468'ACE0'1357'FFFFULL;
 
     if (!expect(!table.probe(zero_signature).hit, "empty zero signature must miss"))
         return false;
@@ -76,10 +81,27 @@ bool test_zero_signature_and_empty_entries() {
     });
 
     const TTProbe hit = table.probe(zero_signature);
-    return expect(hit.hit, "occupied zero signature must hit")
-        && expect(hit.data.depth == DEPTH_UNSEARCHED, "unsearched depth encoding")
-        && expect(hit.data.bound == BOUND_NONE, "bound-none entry remains occupied")
-        && expect(hit.data.static_eval == 77, "evaluation-only entry round-trip");
+    if (!expect(hit.hit, "occupied zero signature must hit")
+        || !expect(hit.data.depth == DEPTH_UNSEARCHED, "unsearched depth encoding")
+        || !expect(hit.data.bound == BOUND_NONE, "bound-none entry remains occupied")
+        || !expect(hit.data.static_eval == 77, "evaluation-only entry round-trip")) {
+        return false;
+    }
+
+    write(table, busy_signature, {
+        .move = Move::normal(H2, H4),
+        .value = 88,
+        .static_eval = -88,
+        .depth = 8,
+        .bound = BOUND_EXACT,
+        .pv = true
+    });
+    const TTProbe busy_hit = table.probe(busy_signature);
+    return expect(busy_hit.hit, "reserved busy signature must be remapped and hit")
+        && expect(busy_hit.data.move == Move::normal(H2, H4),
+                  "remapped busy signature move round-trip")
+        && expect(busy_hit.data.value == 88,
+                  "remapped busy signature payload round-trip");
 }
 
 bool test_write_policy_and_move_preservation() {
@@ -225,6 +247,103 @@ bool test_hashfull_and_clear() {
         && expect(table.hashfull() == 0, "clear empties the table");
 }
 
+bool test_concurrent_publication() {
+    TranspositionTable table(1);
+    constexpr Key key = 0xBADC'0FFE'E000'4321ULL;
+    const std::array<TTData, 4> patterns{{
+        {
+            .move = Move::normal(A2, A4),
+            .value = 101,
+            .static_eval = -101,
+            .depth = 7,
+            .bound = BOUND_UPPER,
+            .pv = false
+        },
+        {
+            .move = Move::normal(B2, B4),
+            .value = 202,
+            .static_eval = -202,
+            .depth = 19,
+            .bound = BOUND_LOWER,
+            .pv = true
+        },
+        {
+            .move = Move::normal(C2, C4),
+            .value = 303,
+            .static_eval = -303,
+            .depth = 31,
+            .bound = BOUND_EXACT,
+            .pv = false
+        },
+        {
+            .move = Move::normal(D2, D4),
+            .value = 404,
+            .static_eval = -404,
+            .depth = 43,
+            .bound = BOUND_NONE,
+            .pv = true
+        }
+    }};
+    const auto is_complete_pattern = [&patterns](const TTData& data) {
+        for (const TTData& pattern : patterns) {
+            if (data.move == pattern.move
+                && data.value == pattern.value
+                && data.static_eval == pattern.static_eval
+                && data.depth == pattern.depth
+                && data.bound == pattern.bound
+                && data.pv == pattern.pv) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    write(table, key, patterns[0], true);
+
+    constexpr std::size_t THREAD_COUNT = 8;
+    constexpr int ITERATIONS = 20'000;
+    std::atomic_bool start{false};
+    std::atomic_bool failed{false};
+    std::vector<std::thread> workers;
+    workers.reserve(THREAD_COUNT);
+    for (std::size_t id = 0; id < THREAD_COUNT; ++id) {
+        workers.emplace_back([&, id] {
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+
+            for (int iteration = 0;
+                 iteration < ITERATIONS
+                    && !failed.load(std::memory_order_relaxed);
+                 ++iteration) {
+                const TTProbe probe = table.probe(key);
+                if (probe.hit && !is_complete_pattern(probe.data)) {
+                    failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+
+                if ((iteration & 1) == 0) {
+                    const std::size_t pattern = (
+                        id + static_cast<std::size_t>(iteration)
+                    ) % patterns.size();
+                    probe.writer.write(patterns[pattern], true);
+                } else if ((iteration & 255) == 1) {
+                    (void) table.hashfull();
+                }
+            }
+        });
+    }
+
+    start.store(true, std::memory_order_release);
+    for (std::thread& worker : workers)
+        worker.join();
+
+    const TTProbe final = table.probe(key);
+    return expect(!failed.load(std::memory_order_relaxed),
+                  "concurrent readers must observe complete atomic payloads")
+        && expect(final.hit && is_complete_pattern(final.data),
+                  "concurrent publication must leave a valid entry");
+}
+
 } // namespace
 
 bool run_tt_tests() {
@@ -233,7 +352,8 @@ bool run_tt_tests() {
                      && test_write_policy_and_move_preservation()
                      && test_cluster_replacement()
                      && test_generation_aging()
-                     && test_hashfull_and_clear();
+                     && test_hashfull_and_clear()
+                     && test_concurrent_publication();
 
     if (passed)
         std::cout << "PASS transposition table\n";

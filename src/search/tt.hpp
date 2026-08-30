@@ -6,6 +6,7 @@
 
 #include "chess/move.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -43,11 +44,13 @@ private:
         detail::TTCluster* cluster,
         std::uint8_t slot,
         std::uint16_t signature,
+        std::uint16_t expected_signature,
         std::uint8_t generation
     ) noexcept;
 
     detail::TTCluster* cluster_ = nullptr;
     std::uint16_t signature_ = 0;
+    std::uint16_t expected_signature_ = 0;
     std::uint8_t slot_ = 0;
     std::uint8_t generation_ = 0;
 };
@@ -79,17 +82,19 @@ public:
     [[nodiscard]] int hashfull() const noexcept;
     [[nodiscard]] std::size_t cluster_count() const noexcept { return cluster_count_; }
     [[nodiscard]] std::size_t size_bytes() const noexcept;
-    [[nodiscard]] std::uint8_t generation() const noexcept { return generation_; }
+    [[nodiscard]] std::uint8_t generation() const noexcept {
+        return generation_.load(std::memory_order_relaxed);
+    }
 
 private:
-    // Writers and probe results are invalidated by resize/clear. This first
-    // implementation is intentionally single-threaded; the public snapshot /
-    // writer split leaves the entry storage replaceable by atomics later.
+    // Probe/write/hashfull/new_search support concurrent search workers.
+    // Writers and probe results are still invalidated by resize/clear, so the
+    // engine must stop and join every worker before changing table storage.
     [[nodiscard]] std::size_t index(Key key) const noexcept;
 
     std::unique_ptr<detail::TTCluster[]> table_;
     std::size_t cluster_count_ = 0;
-    std::uint8_t generation_ = 0;
+    std::atomic<std::uint8_t> generation_{0};
 };
 
 } // namespace mors

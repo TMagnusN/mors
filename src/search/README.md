@@ -386,10 +386,10 @@ History 可用於 MovePicker band 內排序、LMR reduction 調整及 history pr
 
 ```text
 TTCluster (32 bytes)
-|-- TTEntryData[0]  8 bytes
-|-- TTEntryData[1]  8 bytes
-|-- TTEntryData[2]  8 bytes
-`-- signatures      8 bytes (3 x uint16_t + 1 guard lane)
+|-- atomic payload[0]  8 bytes
+|-- atomic payload[1]  8 bytes
+|-- atomic payload[2]  8 bytes
+`-- atomic signatures  8 bytes (3 x uint16_t + 1 guard lane)
 ```
 
 每筆 payload 包含：
@@ -407,6 +407,7 @@ flags        8 bits  (bound + PV + generation)
 - key 低 16 bits 只作 verification signature。
 - key 高 48 bits 經 multiply-high reduction 產生 cluster index。
 - index 與 signature 不重用相同 key bits。
+- signature 0 表示 empty、0xFFFF 表示 writer busy；對應 key signature 會映射到相鄰值。
 - 三個 signature 以 SWAR 一次比較，命中後仍逐槽精確確認。
 - `depth == 0` 表示空 entry；`DEPTH_UNSEARCHED == -2` 仍可編碼成有效 entry。
 - TT 允許只保存 raw `static_eval`、`BOUND_NONE`、`VALUE_NONE` 的 evaluation-only entry。
@@ -520,7 +521,8 @@ search.cpp private Context
 `-- limits / stop state
 ```
 
-`Context` 是實作細節，不出現在 engine/protocol 公開 header。未來 Lazy SMP 可讓每個 thread 擁有自己的 Context，而共享經重新設計為 thread-safe 的 TT。
+`Context` 是實作細節，不出現在 engine/protocol 公開 header。未來 Lazy SMP 可讓每個
+thread 擁有自己的 Context，並共享目前已支援並行 probe/write 的 TT。
 
 建議檔案責任：
 
@@ -533,13 +535,15 @@ search.cpp private Context
 
 ## 並行邊界
 
-目前 TT 明確是 single-threaded：
+TT 的 `probe()`、`TTWriter::write()`、`hashfull()` 與 `new_search()` 可由多個搜尋
+worker 並行呼叫。每個 64-bit payload 使用 lock-free atomic；writer 先以 signature
+lane 的 busy sentinel 取得 slot，再發布完整 payload 與最終 signature。Reader 會在
+讀取 payload 前後驗證 signature lane，避免接受正在替換的 entry。
 
-- payload 與 signature 分開寫入，並非原子 publication。
-- `TTWriter` 保存 cluster 指標與 slot，`resize()` / `clear()` 會使它失效。
-- Probe 與 write 之間假設沒有其他執行緒替換同一 entry。
-
-加入 Lazy SMP 前必須重新設計 entry publication 與讀取一致性，並加入 ThreadSanitizer 或等價壓力測試。不可只把 table 指標分享給多個 Context 就宣稱 thread-safe。
+`TTWriter` 仍保存 cluster 指標與 slot，`resize()` / `clear()` 仍會使它失效。因此這
+兩個操作不是搜尋期操作：engine 必須先發出 stop 並 join 所有 worker，才能清空或
+替換 table storage。一次 root search 也只應由 coordinator 呼叫一次 `new_search()`；
+worker 不應各自增加 generation。
 
 ## 參考結論
 
