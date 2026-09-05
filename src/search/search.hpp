@@ -92,7 +92,8 @@ inline constexpr std::size_t MAX_SEARCH_THREADS = 256;
 // Owns a persistent set of Lazy SMP search threads. Jobs are asynchronous:
 // every worker searches an isolated root copy while sharing the TT and stop
 // state. The main worker remains authoritative for iteration reports and the
-// final result. resize() and start() must only be called while no job is active.
+// final result. Quiet history is private to each worker and retained across
+// jobs. resize(), clear() and start() require the pool to be idle.
 // The pool owns async cancellation after start(); callers stop a job through
 // request_stop().
 class SearchThreadPool final {
@@ -115,6 +116,10 @@ public:
     void resize(std::size_t thread_count);
     [[nodiscard]] std::size_t size() const;
 
+    // Rebuild all worker history while preserving the OS threads and TT.
+    // The caller clears the TT separately when starting a new game.
+    void clear();
+
     void start(
         const Position& root_position,
         const SearchLimits& limits,
@@ -133,6 +138,8 @@ private:
 // coordinator. The root position is copied into worker-local make/unmake and
 // NNUE state, and the TT generation advances exactly once per call. The table
 // must have been resized to a non-zero size and the network must be valid.
+// This standalone entry point starts with fresh history; use SearchThreadPool
+// to retain worker history between root searches.
 [[nodiscard]] SearchResult search(
     Position& position,
     TranspositionTable& table,

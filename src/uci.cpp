@@ -206,6 +206,7 @@ public:
         }
 
         if (command == "ucinewgame") {
+            thread_pool_.clear();
             position_ = start_position(chess960_);
             prior_keys_.clear();
             table_.clear();

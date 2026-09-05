@@ -51,6 +51,75 @@ bool expect(bool condition, const char* message) {
     return false;
 }
 
+bool test_persistent_quiet_history(const nnue::Network& network) {
+    auto position = Position::from_fen(START_FEN);
+    if (!expect(position.has_value(), "history persistence FEN must parse"))
+        return false;
+    TranspositionTable table(4);
+    SearchThreadPool pool(table, network);
+    bool completed_ok = true;
+    const auto run = [&] {
+        // Remove TT reuse as a confounder: only worker history survives.
+        table.clear();
+        SearchResult completed;
+        pool.start(*position, SearchLimits{.max_depth = 5},
+                   [&](const SearchResult& result, std::string_view error) {
+                       completed = result;
+                       completed_ok &= error.empty() && result.completed_depth == 5;
+                   });
+        pool.wait();
+        return completed;
+    };
+    const auto same_search = [](const SearchResult& left, const SearchResult& right) {
+        return left.value == right.value && left.best_move == right.best_move
+            && left.stats.nodes == right.stats.nodes && left.pv_length == right.pv_length
+            && left.principal_variation == right.principal_variation;
+    };
+    const SearchResult cold = run();
+    const SearchResult warm = run();
+    if (!expect(completed_ok && !same_search(cold, warm),
+                "consecutive jobs must retain learned history even after clearing TT")) {
+        return false;
+    }
+
+    TranspositionTable fresh_table(4);
+    SearchThreadPool fresh_pool(fresh_table, network);
+    SearchResult fresh;
+    fresh_pool.start(*position, SearchLimits{.max_depth = 5},
+                     [&](const SearchResult& result, std::string_view error) {
+                         fresh = result;
+                         completed_ok &= error.empty();
+                     });
+    fresh_pool.wait();
+    if (!expect(completed_ok && same_search(cold, fresh),
+                "independent worker pools must not share quiet history")) {
+        return false;
+    }
+
+    const auto generation = table.generation();
+    pool.clear();
+    if (!expect(pool.size() == 1 && table.generation() == generation
+                    && table.probe(position->key()).hit,
+                "clearing worker history must preserve pool size and TT contents")) {
+        return false;
+    }
+    const SearchResult reset = run();
+    if (!expect(completed_ok && same_search(cold, reset),
+                "new-game history reset must reproduce a fresh search")) {
+        return false;
+    }
+    pool.resize(2);
+    pool.start(*position, SearchLimits{.max_depth = MAX_PLY, .max_nodes = 1'000});
+    pool.wait();
+    pool.clear();
+    if (!expect(pool.size() == 2, "history reset must preserve all SMP workers"))
+        return false;
+    pool.resize(1);
+    const SearchResult resized = run();
+    return expect(completed_ok && same_search(cold, resized),
+                  "resizing workers must rebuild their private history");
+}
+
 bool test_null_move_round_trip(const nnue::Network& network) {
     auto parsed = Position::from_fen(
         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
@@ -174,7 +243,7 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
                        && result.principal_variation[2] == Move::normal(G1, F3),
                    "worker refactor must preserve the depth-three PV")
         || !expect(result.stats.nodes == 351,
-                   "worker refactor must preserve the depth-three node count")
+                   "persistent history must preserve the cold depth-three node baseline")
         || !expect(is_valid_value(result.value), "PVS result must be a valid value")
         || !expect(!result.best_move.is_none(), "PVS must return a root move")
         || !expect(result.pv_length >= 1, "PVS must return a principal variation")
@@ -388,10 +457,18 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
     } catch (const std::logic_error&) {
         rejected_busy_resize = true;
     }
+    bool rejected_busy_clear = false;
+    try {
+        pool.clear();
+    } catch (const std::logic_error&) {
+        rejected_busy_clear = true;
+    }
     pool.request_stop();
     pool.wait();
 
-    if (!expect(rejected_busy_resize,
+    if (!expect(rejected_busy_clear,
+                "thread pool must reject history reset during an active job")
+        || !expect(rejected_busy_resize,
                 "thread pool must reject resize during an active job")
         || !expect(stopped_completion && stopped_result,
                    "pool-owned cancellation must report one normal completion")
@@ -539,7 +616,8 @@ bool run_search_tests() {
         return false;
     }
 
-    const bool passed = test_null_move_round_trip(*loaded)
+    const bool passed = test_persistent_quiet_history(*loaded)
+                     && test_null_move_round_trip(*loaded)
                      && test_terminal_nodes(*loaded)
                      && test_pvs_and_restoration(*loaded)
                      && test_reverse_futility_pruning(*loaded)

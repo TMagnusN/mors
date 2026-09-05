@@ -81,6 +81,12 @@ using QuietHistory = std::array<
 using KillerMoves = std::array<std::array<Move, 2>, MAX_PLY>;
 using CounterMoves = std::array<std::array<Move, 64>, 64>;
 
+// Each pool worker owns one instance across jobs. Position/path state stays
+// in Context; learned history is rebuilt only when the pool is cleared/resized.
+struct ThreadData final {
+    QuietHistory quiet_history;
+};
+
 struct WorkerControl final {
     std::atomic<std::uint64_t>* published_nodes = nullptr;
     std::atomic<std::uint64_t>* shared_node_count = nullptr;
@@ -94,12 +100,14 @@ struct Context final {
         Position& current_position,
         TranspositionTable& current_table,
         const nnue::Network& current_network,
+        ThreadData& current_thread_data,
         const SearchLimits& current_limits,
         WorkerControl* current_worker_control = nullptr
     )
         : position(current_position),
           table(current_table),
           network(current_network),
+          thread_data(current_thread_data),
           limits(current_limits),
           worker_control(current_worker_control),
           pv(std::make_unique<PvTable>()) {
@@ -117,6 +125,7 @@ struct Context final {
     Position& position;
     TranspositionTable& table;
     const nnue::Network& network;
+    ThreadData& thread_data;
     const SearchLimits& limits;
     WorkerControl* worker_control = nullptr;
     nnue::Worker evaluator;
@@ -124,7 +133,6 @@ struct Context final {
     std::vector<Key> keys;
     std::size_t root_key_index = 0;
     std::size_t repetition_floor = 0;
-    QuietHistory quiet_history{};
     KillerMoves killer_moves{};
     CounterMoves counter_moves{};
     std::array<Move, MAX_PLY> path_moves{};
@@ -467,7 +475,7 @@ private:
             return KILLER_MOVE_SCORE;
         if (is_counter_move(context, move, ply))
             return COUNTER_MOVE_SCORE;
-        return context.quiet_history[
+        return context.thread_data.quiet_history[
             static_cast<std::size_t>(position.side_to_move())
         ][static_cast<std::size_t>(move.from())]
          [static_cast<std::size_t>(move.to())];
@@ -899,7 +907,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             ++quiet_move_count;
 
         const int history = quiet
-            ? context.quiet_history[
+            ? context.thread_data.quiet_history[
                   static_cast<std::size_t>(context.position.side_to_move())
               ][static_cast<std::size_t>(move.from())]
                [static_cast<std::size_t>(move.to())]
@@ -1081,7 +1089,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                 const int bonus = std::min(2'048, 32 * depth * depth);
                 const Color side = context.position.side_to_move();
                 update_quiet_history(
-                    context.quiet_history,
+                    context.thread_data.quiet_history,
                     side,
                     move,
                     bonus
@@ -1090,7 +1098,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                      index + 1 < searched_quiet_count;
                      ++index) {
                     update_quiet_history(
-                        context.quiet_history,
+                        context.thread_data.quiet_history,
                         side,
                         searched_quiets[index],
                         -bonus / 2
@@ -1258,9 +1266,10 @@ class SearchWorker final {
 public:
     SearchWorker(
         TranspositionTable& table,
-        const nnue::Network& network
+        const nnue::Network& network,
+        ThreadData& thread_data
     ) noexcept
-        : table_(table), network_(network) {}
+        : table_(table), network_(network), thread_data_(thread_data) {}
 
     [[nodiscard]] SearchResult run(
         const Position& root_position,
@@ -1274,6 +1283,7 @@ public:
             position,
             table_,
             network_,
+            thread_data_,
             limits,
             worker_control
         );
@@ -1362,6 +1372,7 @@ public:
 private:
     TranspositionTable& table_;
     const nnue::Network& network_;
+    ThreadData& thread_data_;
 };
 
 // Coordinates state shared by a root search. Only this layer advances the TT
@@ -1461,6 +1472,22 @@ public:
     [[nodiscard]] std::size_t size() const {
         const std::lock_guard lock(mutex_);
         return threads_.size();
+    }
+
+    void clear() {
+        const std::lock_guard lock(mutex_);
+        if (active_)
+            throw std::logic_error("cannot clear thread data during search");
+        if (restarting_ || shutting_down_)
+            throw std::logic_error("thread pool is not ready");
+
+        // Build all replacements before publishing any so allocation failure
+        // leaves every worker's existing history intact.
+        std::vector<std::unique_ptr<ThreadData>> replacements;
+        replacements.reserve(threads_.size());
+        for (std::size_t index = 0; index < threads_.size(); ++index)
+            replacements.push_back(std::make_unique<ThreadData>());
+        thread_data_.swap(replacements);
     }
 
     void start(
@@ -1601,6 +1628,10 @@ private:
 
         std::vector<std::thread> replacements;
         try {
+            thread_data_.clear();
+            thread_data_.reserve(thread_count);
+            for (std::size_t index = 0; index < thread_count; ++index)
+                thread_data_.push_back(std::make_unique<ThreadData>());
             replacements.reserve(thread_count);
             for (std::size_t index = 0; index < thread_count; ++index)
                 replacements.emplace_back(&Impl::worker_loop, this, index);
@@ -1649,7 +1680,6 @@ private:
     }
 
     void worker_loop(std::size_t worker_index) {
-        SearchWorker worker(table_, network_);
         std::uint64_t observed_generation = 0;
 
         while (true) {
@@ -1711,6 +1741,7 @@ private:
             SearchResult result;
             std::string error;
             try {
+                SearchWorker worker(table_, network_, *thread_data_[worker_index]);
                 result = worker.run(
                     job->root,
                     worker_limits,
@@ -1785,6 +1816,7 @@ private:
     std::condition_variable start_cv_;
     std::condition_variable idle_cv_;
     std::vector<std::thread> threads_;
+    std::vector<std::unique_ptr<ThreadData>> thread_data_;
     std::optional<Job> job_;
     std::atomic_bool stop_requested_{false};
     std::uint64_t job_generation_ = 0;
@@ -1808,6 +1840,10 @@ void SearchThreadPool::resize(std::size_t thread_count) {
 
 std::size_t SearchThreadPool::size() const {
     return impl_->size();
+}
+
+void SearchThreadPool::clear() {
+    impl_->clear();
 }
 
 void SearchThreadPool::start(
@@ -1836,7 +1872,8 @@ SearchResult search(
     const nnue::Network& network,
     const SearchLimits& limits
 ) {
-    SearchWorker main_worker(table, network);
+    auto thread_data = std::make_unique<ThreadData>();
+    SearchWorker main_worker(table, network, *thread_data);
     SearchCoordinator coordinator(
         table,
         network,

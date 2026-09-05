@@ -17,10 +17,10 @@ deepening depth 後停止；hard deadline 每 64 nodes 輪詢並立即傳播
 `search.hpp/.cpp` 已提供單執行緒 iterative-deepening PVS：第一個著法使用完整窗口，後續著法先做 null-window probe，只有改善 alpha 且尚未 fail-high 時才完整重搜。第一版同時接入 check-aware qsearch、增量 NNUE、TT probe/store、TT move ordering、mate-distance normalization、repetition、50-move、insufficient-material、PV 與 hard node limit。
 
 目前已加入 TT raw static-eval cache、non-PV reverse futility/null-move pruning、
-butterfly quiet history、killer/countermove ordering、main-search LMP/LMR，以及
-Reckless-style qsearch threshold SEE 與 noisy late-move pruning；
-仍刻意不包含 continuation history、forward futility、singular
-extension 與 SMP。這些必須在固定 PVS benchmark 與正確性測試之上逐項加入。
+跨 UCI go 保留的 worker-private butterfly quiet history、killer/countermove ordering、
+main-search LMP/LMR、forward futility、singular extension 與 Lazy SMP，以及
+Reckless-style qsearch threshold SEE 與 noisy late-move pruning。
+目前尚未實作 noisy history、continuation history 與 correction history。
 
 ## 分數領域總覽
 
@@ -357,6 +357,16 @@ bonus 先 clamp，運算使用足夠寬的中間型別，最後再寫回 bounded
 
 History 可用於 MovePicker band 內排序、LMR reduction 調整及 history pruning，但不可直接變成 position `Value`。
 
+目前 `QuietHistory` 維持 `[side][from][to]` 三維索引，`int16_t` 儲存共
+16 KiB／worker，上限仍為 8192，cutoff bonus/malus 與讀取規則不變。
+尚未加入起點／終點受攻擊狀態維度。
+
+Quiet history 位於各 worker 私有且持久的 `ThreadData`，連續 UCI `go` 保留學習。
+`ucinewgame` 透過 `SearchThreadPool::clear()` 重建所有 ThreadData，再清空 TT；
+OS threads 保留。搜尋中禁止 clear／resize，改變 thread count 會重建各 worker
+的歷史。`Clear Hash` 僅清 TT；獨立同步 `search()` 每次使用新的 ThreadData。
+Killer、countermove、PV、repetition keys 與 NNUE 搜尋堆疊仍屬於每次 job 的 Context。
+
 `CorrectionScore` 同樣是有界學習值，但唯一用途是透過明確 divisor/grain 轉成 `Value` residual，再修正 raw static evaluation。更新的學習目標是可信 search score 與 raw/corrected eval 的差；mate/TB、in-check、不可靠 bound 等節點不可污染 correction。套用後必須 clamp 回 ordinary evaluation 區間，TT 始終保存 raw eval。
 
 ## Depth、ply 與 seldepth
@@ -509,8 +519,8 @@ Prefetch 只是 cache hint，不可改變正確性，也不應為取得 key 重�
 
 同步公開 `search()` 建立一個私有 `SearchCoordinator` 與 main `SearchWorker`。
 UCI 則持有公開的 `SearchThreadPool`：所有 OS thread 跨 `go` 常駐並以 barrier
-同步開始同一個 Lazy SMP job。每個 thread 擁有自己的 `SearchWorker`、root copy
-與 Context，只共享 TT、停止狀態和全域 node budget。Pool 每個 job 只推進一次 TT
+同步開始同一個 Lazy SMP job。每個 thread 擁有持久的 `ThreadData`，每個 job
+建立自己的 `SearchWorker`、root copy 與 Context。Pool 每個 job 只推進一次 TT
 generation，只有 main worker 能呼叫 iteration callback 並決定最終結果。
 
 ```text
@@ -524,11 +534,12 @@ public search()
 
 UCI SearchThreadPool
 |-- persistent main thread
-|   `-- SearchWorker -> per-job Context
-`-- persistent helper threads -> independent per-job Contexts
+|   |-- persistent ThreadData -> QuietHistory
+|   `-- SearchWorker -> per-job Context -> ThreadData&
+`-- persistent helper threads -> private ThreadData + per-job Contexts
 ```
 
-每個 worker 的可變工作狀態放在 `search.cpp` 私有 `Context`：
+每個 job 的暫時搜尋狀態放在 `search.cpp` 私有 `Context`，學習資料透過參考連到持久 ThreadData：
 
 ```text
 search.cpp private Context
@@ -537,14 +548,14 @@ search.cpp private Context
 |-- SearchStack[MAX_PLY + guard]
 |-- repetition keys
 |-- PV table / root moves
-|-- history and correction tables
+|-- ThreadData& -> worker-private QuietHistory
 |-- node/depth counters
 `-- limits / stop state
 ```
 
-`Context` 是實作細節，不出現在 engine/protocol 公開 header。每個 persistent
-thread 擁有一個私有 `SearchWorker`，每個 job 都建立獨立 Context 並複製 root
-Position。所有 worker 從 depth 1 進行 iterative deepening，並依 worker index 使用
+`Context` 與 `ThreadData` 都是實作細節，不出現在 engine/protocol 公開 header。
+每個 persistent thread 的 ThreadData 跨 job 保留；每個 job 建立 SearchWorker、
+獨立 Context 並複製 root Position。所有 worker 從 depth 1 進行 iterative deepening，並依 worker index 使用
 略微不同的 aspiration delta；所有 worker 只共享停止狀態、全域 node budget、唯讀
 network 與支援並行 probe/write 的 TT。
 Main 完成後會發布停止，pool 等全部 helper 回到 idle 才送出 completion callback。
