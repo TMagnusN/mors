@@ -81,10 +81,18 @@ using QuietHistory = std::array<
 using KillerMoves = std::array<std::array<Move, 2>, MAX_PLY>;
 using CounterMoves = std::array<std::array<Move, 64>, 64>;
 
+using PieceToHistory = std::array<std::array<std::int16_t, SQUARE_NB>, PIECE_NB>;
+using ContinuationHistory =
+    std::array<std::array<PieceToHistory, SQUARE_NB>, PIECE_NB>;
+using NoisyHistory = std::array<
+    std::array<std::array<std::int16_t, PIECE_TYPE_NB>, SQUARE_NB>, PIECE_NB>;
+
 // Each pool worker owns one instance across jobs. Position/path state stays
 // in Context; learned history is rebuilt only when the pool is cleared/resized.
 struct ThreadData final {
-    QuietHistory quiet_history;
+    QuietHistory quiet_history{};
+    ContinuationHistory continuation_history{};
+    NoisyHistory noisy_history{};
 };
 
 struct WorkerControl final {
@@ -136,6 +144,7 @@ struct Context final {
     KillerMoves killer_moves{};
     CounterMoves counter_moves{};
     std::array<Move, MAX_PLY> path_moves{};
+    std::array<Piece, MAX_PLY> path_pieces{};
     int nmp_min_ply = 0;
     SearchStats stats{};
     bool stopped = false;
@@ -555,23 +564,52 @@ void order_moves(
     }
 }
 
-void update_quiet_history(
-    QuietHistory& quiet_history,
-    Color side,
-    Move move,
-    int bonus
-) noexcept {
-    assert(!move.is_none());
+void update_history_entry(std::int16_t& entry, int bonus) noexcept {
     bonus = std::clamp(bonus, -QUIET_HISTORY_MAX, QUIET_HISTORY_MAX);
-    std::int16_t& entry =
-        quiet_history[static_cast<std::size_t>(side)]
-                     [static_cast<std::size_t>(move.from())]
-                     [static_cast<std::size_t>(move.to())];
     const int current = entry;
     entry = static_cast<std::int16_t>(
-        current + bonus
-        - current * std::abs(bonus) / QUIET_HISTORY_MAX
+        current + bonus - current * std::abs(bonus) / QUIET_HISTORY_MAX
     );
+}
+
+// The moving piece is recorded before make_move, including for promotions.
+// Stop at a null move: synthetic positions must not train continuations.
+template<typename Visitor>
+void visit_continuations(Context& context, Move move, int ply, Visitor visit) noexcept {
+    const Piece piece = context.position.piece_on(move.from());
+    for (int distance = 1; distance <= 2 && distance <= ply; ++distance) {
+        const auto previous_ply = static_cast<std::size_t>(ply - distance);
+        const Move previous = context.path_moves[previous_ply];
+        const Piece previous_piece = context.path_pieces[previous_ply];
+        if (previous.is_none() || previous_piece == NO_PIECE)
+            break;
+        visit(context.thread_data.continuation_history
+            [previous_piece][previous.to()][piece][move.to()]);
+    }
+}
+
+std::int16_t& noisy_history_entry(Context& context, Move move) noexcept {
+    const Piece piece = context.position.piece_on(move.from());
+    const PieceType captured = move.type() == EN_PASSANT
+        ? PAWN : type_of(context.position.piece_on(move.to()));
+    return context.thread_data.noisy_history[piece][move.to()][captured];
+}
+
+int see_history(Context& context, Move move, int ply, bool quiet) noexcept {
+    if (!quiet)
+        return noisy_history_entry(context, move);
+    int history = context.thread_data.quiet_history
+        [context.position.side_to_move()][move.from()][move.to()];
+    visit_continuations(context, move, ply,
+        [&](std::int16_t& entry) noexcept { history += entry; });
+    return history;
+}
+
+void update_quiet_history(Context& context, Move move, int ply, int bonus) noexcept {
+    update_history_entry(context.thread_data.quiet_history
+        [context.position.side_to_move()][move.from()][move.to()], bonus);
+    visit_continuations(context, move, ply,
+        [&](std::int16_t& entry) noexcept { update_history_entry(entry, bonus); });
 }
 
 [[nodiscard]] Depth late_move_reduction(
@@ -772,6 +810,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         );
         const Depth null_depth = std::max(Depth{0}, depth - reduction);
         context.path_moves[static_cast<std::size_t>(ply)] = {};
+        context.path_pieces[static_cast<std::size_t>(ply)] = NO_PIECE;
         ++context.stats.nmp_searches;
 
         Value null_score = VALUE_NONE;
@@ -887,6 +926,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     std::size_t quiet_move_count = 0;
     std::array<Move, MAX_MOVES> searched_quiets{};
     std::size_t searched_quiet_count = 0;
+    std::array<Move, MAX_MOVES> searched_noisies{};
+    std::size_t searched_noisy_count = 0;
     bool skip_quiets = false;
     const bool lmp_node = !excluded_search
                        && !pv_node
@@ -983,6 +1024,27 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             }
         }
 
+        // Experimental Reckless-style main-search SEE policy. Require a real
+        // searched move before pruning (best_value may be a futility estimate).
+        // Excluded searches retain the existing MORS singular-search guards.
+        if (context.limits.use_see_pruning
+            && !excluded_search && ply > 0 && move_count > 0
+            && is_valid_value(best_value) && !is_loss(best_value)
+            && (!checked || !quiet)) {
+            const int history_score = see_history(context, move, ply, quiet);
+            const SeeValue threshold = std::min(0, quiet
+                ? -12 * depth * depth + 56 * depth - 27 * history_score / 1024 + 27
+                : -7 * depth * depth - 36 * depth - 39 * history_score / 1024 + 14);
+            if (!see_ge(context.position, move, threshold)) {
+                ++context.stats.see_prunes;
+                if (quiet)
+                    ++context.stats.see_quiet_prunes;
+                else
+                    ++context.stats.see_noisy_prunes;
+                continue;
+            }
+        }
+
         Depth reduction = 0;
         if (!excluded_search
             && !checked
@@ -1005,6 +1067,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
 
         context.path_moves[static_cast<std::size_t>(ply)] = move;
+        context.path_pieces[static_cast<std::size_t>(ply)] =
+            context.position.piece_on(move.from());
         const Depth extension = move == tt_move ? singular_extension : 0;
         const Depth child_depth = depth - 1 + extension;
         Value score = VALUE_NONE;
@@ -1074,6 +1138,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         ++move_count;
         if (quiet)
             searched_quiets[searched_quiet_count++] = move;
+        else
+            searched_noisies[searched_noisy_count++] = move;
 
         if (score > best_value) {
             best_value = score;
@@ -1085,22 +1151,26 @@ void update_pv(Context& context, int ply, Move move) noexcept {
                 update_pv(context, ply, move);
         }
         if (alpha >= beta) {
+            if (!excluded_search) {
+                const int bonus = std::min(2'048, 32 * depth * depth);
+                if (!quiet)
+                    update_history_entry(noisy_history_entry(context, move), bonus);
+                for (std::size_t index = 0; index < searched_noisy_count; ++index) {
+                    if (searched_noisies[index] != move)
+                        update_history_entry(
+                            noisy_history_entry(context, searched_noisies[index]), -bonus / 2);
+                }
+            }
             if (!excluded_search && quiet) {
                 const int bonus = std::min(2'048, 32 * depth * depth);
-                const Color side = context.position.side_to_move();
-                update_quiet_history(
-                    context.thread_data.quiet_history,
-                    side,
-                    move,
-                    bonus
-                );
+                update_quiet_history(context, move, ply, bonus);
                 for (std::size_t index = 0;
                      index + 1 < searched_quiet_count;
                      ++index) {
                     update_quiet_history(
-                        context.thread_data.quiet_history,
-                        side,
+                        context,
                         searched_quiets[index],
+                        ply,
                         -bonus / 2
                     );
                 }
@@ -1236,6 +1306,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
         }
 
         context.path_moves[static_cast<std::size_t>(ply)] = move;
+        context.path_pieces[static_cast<std::size_t>(ply)] =
+            context.position.piece_on(move.from());
         Value score = VALUE_NONE;
         {
             MoveGuard guard(context, move);

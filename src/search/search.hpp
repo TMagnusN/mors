@@ -44,6 +44,10 @@ struct SearchLimits final {
     std::chrono::milliseconds soft_time{};
     std::chrono::milliseconds hard_time{};
 
+    // Toggle only main-search SEE pruning for controlled comparisons.
+    // qsearch SEE and history learning remain enabled in both cases.
+    bool use_see_pruning = true;
+
     // Called synchronously after each fully completed iterative-deepening
     // depth. An interrupted partial iteration is never reported.
     std::function<void(const SearchResult&)> iteration_callback{};
@@ -71,6 +75,9 @@ struct SearchStats final {
     std::uint64_t singular_extensions = 0;
     std::uint64_t singular_reductions = 0;
     std::uint64_t singular_multicut_cutoffs = 0;
+    std::uint64_t see_prunes = 0;
+    std::uint64_t see_quiet_prunes = 0;
+    std::uint64_t see_noisy_prunes = 0;
     std::uint64_t qsearch_see_prunes = 0;
     std::uint64_t qsearch_lmp_prunes = 0;
     int seldepth = 0;
@@ -92,7 +99,7 @@ inline constexpr std::size_t MAX_SEARCH_THREADS = 256;
 // Owns a persistent set of Lazy SMP search threads. Jobs are asynchronous:
 // every worker searches an isolated root copy while sharing the TT and stop
 // state. The main worker remains authoritative for iteration reports and the
-// final result. Quiet history is private to each worker and retained across
+// final result. Quiet, continuation and noisy history are private to each worker and retained across
 // jobs. resize(), clear() and start() require the pool to be idle.
 // The pool owns async cancellation after start(); callers stop a job through
 // request_stop().

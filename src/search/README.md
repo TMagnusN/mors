@@ -629,3 +629,35 @@ Node-limited job 以原子 compare/exchange 共用精確 budget；一般 time/de
 - `MoveScore` category 不因 history 最大/最小值而跨 band 或溢位。
 
 先讓這些語意穩定，再增加 pruning。Search 強度策略可以調，數值契約不能隨 heuristic 漂移。
+
+
+## 主搜尋 SEE 實驗
+
+主搜尋在落子前，以深度、走法類型及 history 決定 SEE 門檻。此實驗依使用者
+要求，先採用 Reckless 的門檻係數，尚未經 MORS 對局調參驗證。
+安靜步使用原有 quiet history 加前 1、2 層 continuation history；非安靜步使用
+以 moving piece、destination、captured type 索引的 noisy history（吃過路兵按
+PAWN 記錄，無吃子升變按 NO_PIECE_TYPE 記錄）。這是 MORS 的索引與更新方式，
+未移植 Reckless 的 threat-conditioned history。
+
+新 history 與 quiet history 同樣為 worker 私有、跨 job 保留並隨 clear/resize 重建。
+安靜步 beta cutoff 更新 quiet/continuation history，非安靜步 cutoff 更新 noisy
+history，已搜尋但失敗的對應走法扣分；跳過的走法不訓練。Continuation 不跨空步。
+目前組合 history 只供新增 SEE 剪枝使用，原有排序、FP、LMP、LMR 仍用既有分數。
+
+根節點、excluded search、尚未搜尋任何走法、best score 仍屬 loss，以及被將軍時的
+安靜應將步不做主搜尋 SEE 剪枝。`SearchLimits::use_see_pruning` 預設開啟；關閉
+僅停用主搜尋 SEE，不影響 qsearch SEE 與 history 學習，便於固定條件比較。
+`SearchStats` 的 `see_prunes`、`see_quiet_prunes`、`see_noisy_prunes` 記錄剪枝數。
+
+
+本次 dev/base 的使用者回報：STC `10+0.1`、1 thread、64 MB、
+`UHO_4060_v4.epd`，280 局為 89 勝／54 負／137 和，得分率 56.25%，
+fastchess 顯示 Elo +43.66 ±23.25、LOS 99.99%。這是初步局數結果，
+不代表已完成 SPRT 或 LTC 驗證。
+
+制式對局腳本保存在 `tools/run-stc.ps1` 與 `tools/run-ltc.ps1`，沿用使用者
+本機路徑與裁決設定。STC 為 `10+0.1`、64 MB；LTC 為 `60+0.6`、256 MB；
+兩者均為每引擎 1 thread、並行 14、交換先後手。執行前需備妥 fastchess
+目錄內的 `dev.exe`、`base.exe`。兩套腳本共用 `dev-vs-base.pgn` 輸出名稱，
+不同測試的輸出須自行保留或更名。

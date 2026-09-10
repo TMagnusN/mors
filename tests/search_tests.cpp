@@ -223,6 +223,7 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
     bool reported_nodes_increase = true;
     bool root_unchanged_during_callback = true;
     SearchLimits limits{.max_depth = 3};
+    limits.use_see_pruning = false; // Preserve the pre-SEE reference search.
     limits.iteration_callback = [&](const SearchResult& iteration) {
         reported_depths.push_back(iteration.completed_depth);
         if (iteration.stats.nodes <= previous_reported_nodes)
@@ -280,6 +281,64 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
         pv_position.do_move(move, state);
     }
     return true;
+}
+
+bool test_main_search_see(const nnue::Network& network) {
+    constexpr std::array positions{
+        START_FEN,
+        std::string_view{"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10"},
+        std::string_view{"4k3/8/8/8/8/8/4r3/3QK3 w - - 0 1"},
+        std::string_view{"4k3/P7/8/3pP3/8/8/8/4K3 w - d6 0 1"}
+    };
+    std::uint64_t quiet_prunes = 0;
+    std::uint64_t noisy_prunes = 0;
+    for (const auto fen : positions) {
+        auto position = Position::from_fen(fen);
+        if (!expect(position.has_value(), "main SEE FEN must parse"))
+            return false;
+        const auto original = position->fen();
+        const auto original_key = position->key();
+        TranspositionTable table(8);
+        for (const bool enabled : {false, true}) {
+            table.clear();
+            SearchLimits limits{.max_depth = 6};
+            limits.use_see_pruning = enabled;
+            const auto result = search(*position, table, network, limits);
+            if (!expect(result.completed_depth == 6 && !result.stopped,
+                        "SEE comparison must complete both searches")
+                || !expect(is_valid_value(result.value) && move_is_legal(*position, result.best_move),
+                           "SEE comparison must return a valid score and legal move")
+                || !expect(position->fen() == original && position->key() == original_key,
+                           "SEE comparison must preserve the root")
+                || !expect(result.stats.see_prunes == result.stats.see_quiet_prunes
+                                                       + result.stats.see_noisy_prunes,
+                           "SEE categories must sum to the total")
+                || !expect(enabled || result.stats.see_prunes == 0,
+                           "disabling main SEE must suppress all main SEE pruning"))
+                return false;
+            Position pv = *position;
+            for (std::size_t index = 0; index < result.pv_length; ++index) {
+                const Move move = result.principal_variation[index];
+                if (!expect(move_is_legal(pv, move), "SEE search PV must remain legal"))
+                    return false;
+                StateInfo state;
+                pv.do_move(move, state);
+            }
+            quiet_prunes += result.stats.see_quiet_prunes;
+            noisy_prunes += result.stats.see_noisy_prunes;
+            std::cout << "SEE " << (enabled ? "on" : "off")
+                      << " nodes=" << result.stats.nodes
+                      << " quiet=" << result.stats.see_quiet_prunes
+                      << " noisy=" << result.stats.see_noisy_prunes << '\n';
+        }
+        table.clear();
+        const auto root_only = search(*position, table, network, SearchLimits{.max_depth = 1});
+        if (!expect(root_only.stats.see_prunes == 0,
+                    "root moves must never undergo main SEE pruning"))
+            return false;
+    }
+    return expect(quiet_prunes > 0 && noisy_prunes > 0,
+                  "comparison positions must exercise quiet and noisy SEE pruning");
 }
 
 bool test_reverse_futility_pruning(const nnue::Network& network) {
@@ -379,7 +438,7 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
     std::size_t completion_count = 0;
     pool.start(
         *parsed,
-        SearchLimits{.max_depth = 3},
+        SearchLimits{.max_depth = 3, .use_see_pruning = false},
         [&](const SearchResult& result, std::string_view error) {
             completed = result;
             completion_error = error;
@@ -620,6 +679,7 @@ bool run_search_tests() {
                      && test_null_move_round_trip(*loaded)
                      && test_terminal_nodes(*loaded)
                      && test_pvs_and_restoration(*loaded)
+                     && test_main_search_see(*loaded)
                      && test_reverse_futility_pruning(*loaded)
                      && test_tt_reuse(*loaded)
                      && test_persistent_thread_pool(*loaded)
