@@ -1,9 +1,7 @@
 <div align="center">
   <p><strong>English (en-US)</strong> | <a href="README.zh-TW.md">繁體中文 (zh-TW)</a></p>
 
-  <img src="icon-dragon-left.png" alt="MORS dragon" width="220">
-
-  # MORS
+  <img src="Full-icon.png" alt="MORS dragon" width="480">
 
   A modern C++23 UCI chess engine.
 

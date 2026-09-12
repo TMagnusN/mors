@@ -1,9 +1,7 @@
 <div align="center">
   <p><a href="README.md">English (en-US)</a> | <strong>繁體中文 (zh-TW)</strong></p>
 
-  <img src="icon-dragon-left.png" alt="MORS 龍形標誌" width="220">
-
-  # MORS
+  <img src="Full-icon.png" alt="MORS 龍形標誌" width="480">
 
   一款以 C++23 編寫的現代 UCI 西洋棋引擎。
 
