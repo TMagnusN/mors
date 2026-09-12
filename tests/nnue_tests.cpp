@@ -4,11 +4,15 @@
 
 #include "chess/movegen.hpp"
 #include "eval/nnue/network.hpp"
+#include "eval/nnue/output.hpp"
 #include "eval/nnue/wdl.hpp"
 #include "eval/nnue/worker.hpp"
 #include "search/score.hpp"
 
 #include <array>
+#include <bit>
+#include <limits>
+#include <vector>
 #include <filesystem>
 #include <iostream>
 #include <string_view>
@@ -41,6 +45,87 @@ struct Golden final {
     std::string_view fen;
     Value expected;
 };
+
+bool test_output_kernels() {
+#if defined(__AVX2__)
+    using nnue::detail::Accumulator;
+    Accumulator first{}, second{}, first_weights{}, second_weights{};
+    const auto check = [&](bool narrow) {
+        const auto expected = nnue::detail::dot_pair_scalar(
+            first, first_weights.data(), second, second_weights.data());
+        return expect(nnue::detail::dot_pair_avx2_wide(
+                          first, first_weights.data(), second, second_weights.data()) == expected,
+                      "wide SIMD raw sum must equal scalar before scaling/clamping")
+            && (!narrow || expect(nnue::detail::dot_pair_avx2_narrow(
+                          first, first_weights.data(), second, second_weights.data()) == expected,
+                      "narrow SIMD raw sum must equal scalar before scaling/clamping"));
+    };
+
+    // Maximal lanes and totals exceeding INT32_MAX, including negative totals.
+    first.fill(32'767);
+    second.fill(255);
+    for (const std::int16_t weight : {std::int16_t{128}, std::int16_t{-128}}) {
+        first_weights.fill(weight);
+        second_weights.fill(weight);
+        if (!check(true)) return false;
+    }
+    // Large cancellation must remain exact before the final evaluation clamp.
+    first_weights.fill(128);
+    second_weights.fill(-128);
+    second_weights.back() = -127;
+    if (!check(true)) return false;
+
+    std::uint64_t state = 0xD4E12C77AB890531ULL;
+    const auto random = [&]() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    };
+    constexpr std::array<std::int16_t, 9> EDGES{
+        -32'768, -1, 0, 1, 127, 254, 255, 256, 32'767
+    };
+    for (std::size_t sample = 0; sample < 2'000; ++sample) {
+        const bool narrow = sample < 1'000;
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            first[i] = sample % 2 == 0 ? EDGES[random() % EDGES.size()]
+                : std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(random()));
+            second[i] = sample % 2 == 0 ? EDGES[random() % EDGES.size()]
+                : std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(random()));
+            first_weights[i] = narrow ? static_cast<std::int16_t>(int(random() % 257) - 128)
+                : std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(random()));
+            second_weights[i] = narrow ? static_cast<std::int16_t>(int(random() % 257) - 128)
+                : std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(random()));
+        }
+        if (!check(narrow)) return false;
+    }
+    first.fill(255);
+    second.fill(255);
+    first_weights.fill(std::numeric_limits<std::int16_t>::min());
+    second_weights.fill(std::numeric_limits<std::int16_t>::max());
+    if (!check(false)) return false;
+#endif
+    return true;
+}
+
+bool test_output_weight_dispatch() {
+    using Shape = nnue::P2H32;
+    std::vector<std::byte> payload(Shape::PAYLOAD_BYTES);
+    constexpr std::size_t OFFSET = 2 * (Shape::COARSE_WEIGHT_COUNT
+        + Shape::COARSE_BIAS_COUNT + Shape::FINE_WEIGHT_COUNT + Shape::FINE_BIAS_COUNT);
+    constexpr std::size_t LAST = OFFSET + 2 * (Shape::OUTPUT_WEIGHT_COUNT - 1);
+    for (const int weight : {0, -128, 128, -129, 129, -32'768, 32'767}) {
+        const auto bits = static_cast<std::uint16_t>(weight);
+        payload[LAST] = static_cast<std::byte>(bits & 255U);
+        payload[LAST + 1] = static_cast<std::byte>(bits >> 8);
+        auto loaded = nnue::Network::load(payload, "output-dispatch-test");
+        if (!expect(loaded.has_value(), "wide-weight external network must remain loadable")
+            || !expect(loaded->has_fast_output_weights() == (weight >= -128 && weight <= 128),
+                       "all output buckets must be checked for narrow SIMD eligibility"))
+            return false;
+    }
+    return true;
+}
 
 bool test_golden(const nnue::Network& network) {
     constexpr std::array<Golden, 5> CASES{{
@@ -321,7 +406,9 @@ bool run_nnue_tests() {
                             loaded->memory_bytes() == mors::nnue::P2H32::PAYLOAD_BYTES,
                             "network payload size"
                         );
-    const bool golden = base && test_golden(*loaded);
+    const bool kernels = base && test_output_kernels() && test_output_weight_dispatch()
+        && expect(loaded->has_fast_output_weights(), "production network must select narrow SIMD");
+    const bool golden = kernels && test_golden(*loaded);
     const bool incremental = golden && test_incremental_moves(*loaded);
     const bool line = incremental && test_incremental_line(*loaded);
     const bool lazy = line && test_lazy_incremental_line(*loaded);

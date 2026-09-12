@@ -4,6 +4,7 @@
 
 #include "network.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -119,6 +120,7 @@ struct Network::Impl final {
     AlignedI16Buffer output_biases{P2H32::OUTPUT_BIAS_COUNT};
     std::filesystem::path source;
     std::int32_t scale = P2H32::DEFAULT_SCALE;
+    bool fast_output_weights = false;
 };
 
 Network::Network() = default;
@@ -208,11 +210,22 @@ std::expected<Network, std::string> Network::load(
     if (input.peek() != std::char_traits<char>::eof())
         return std::unexpected("P2-H32 file contains trailing data");
 
+    const auto weights = network.impl_->output_weights.span();
+    network.impl_->fast_output_weights = std::all_of(
+        weights.begin(), weights.end(), [](std::int16_t weight) {
+            return weight >= -P2H32::FAST_OUTPUT_WEIGHT_MAX
+                && weight <= P2H32::FAST_OUTPUT_WEIGHT_MAX;
+        }
+    );
     return network;
 }
 
 bool Network::valid() const noexcept {
     return impl_ != nullptr;
+}
+
+bool Network::has_fast_output_weights() const noexcept {
+    return impl_ && impl_->fast_output_weights;
 }
 
 std::int32_t Network::scale() const noexcept {

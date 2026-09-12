@@ -30,6 +30,8 @@ struct P2H32 final {
 
     static constexpr std::int32_t QA = 255;
     static constexpr std::int32_t QB = 64;
+    // Bound required by the exact int16 multiply / int32 dot-product kernel.
+    static constexpr std::int32_t FAST_OUTPUT_WEIGHT_MAX = 128;
     static constexpr std::int32_t DEFAULT_SCALE = 400;
 
     static constexpr std::uint32_t FILE_MAGIC = 0x4555'4E4D;
@@ -77,6 +79,7 @@ public:
 
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] std::int32_t scale() const noexcept;
+    [[nodiscard]] bool has_fast_output_weights() const noexcept;
     [[nodiscard]] const std::filesystem::path& source() const noexcept;
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
 

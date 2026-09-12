@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "worker.hpp"
+#include "output.hpp"
 
 #include <algorithm>
 #include <array>
@@ -472,94 +473,6 @@ void apply_incremental(
     }
 }
 
-[[nodiscard]] constexpr std::int32_t screlu(std::int32_t value) noexcept {
-    const std::int32_t clipped = std::clamp(value, 0, P2H32::QA);
-    return clipped * clipped;
-}
-
-[[nodiscard]] std::int64_t dot_pair_scalar(
-    const Accumulator& first,
-    const std::int16_t* first_weights,
-    const Accumulator& second,
-    const std::int16_t* second_weights
-) noexcept {
-    std::int64_t total = 0;
-    for (std::size_t index = 0; index < P2H32::WIDTH; ++index) {
-        total += static_cast<std::int64_t>(screlu(first[index])) * first_weights[index];
-        total += static_cast<std::int64_t>(screlu(second[index])) * second_weights[index];
-    }
-    return total;
-}
-
-#if defined(__AVX2__)
-[[nodiscard]] std::int64_t dot_pair_avx2(
-    const Accumulator& first,
-    const std::int16_t* first_weights,
-    const Accumulator& second,
-    const std::int16_t* second_weights
-) noexcept {
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i clip = _mm256_set1_epi16(static_cast<std::int16_t>(P2H32::QA));
-    __m256i total64 = _mm256_setzero_si256();
-
-    const std::array<const std::int16_t*, 2> values{first.data(), second.data()};
-    const std::array<const std::int16_t*, 2> weights{first_weights, second_weights};
-
-    for (std::size_t offset = 0; offset < P2H32::WIDTH; offset += 16) {
-        for (std::size_t side = 0; side < 2; ++side) {
-            const __m256i raw = _mm256_loadu_si256(
-                reinterpret_cast<const __m256i*>(values[side] + offset)
-            );
-            const __m256i clipped = _mm256_min_epi16(
-                _mm256_max_epi16(raw, zero),
-                clip
-            );
-            const __m256i raw_weights = _mm256_loadu_si256(
-                reinterpret_cast<const __m256i*>(weights[side] + offset)
-            );
-
-            const __m256i value32_low = _mm256_cvtepi16_epi32(
-                _mm256_castsi256_si128(clipped)
-            );
-            const __m256i value32_high = _mm256_cvtepi16_epi32(
-                _mm256_extracti128_si256(clipped, 1)
-            );
-            const __m256i weight32_low = _mm256_cvtepi16_epi32(
-                _mm256_castsi256_si128(raw_weights)
-            );
-            const __m256i weight32_high = _mm256_cvtepi16_epi32(
-                _mm256_extracti128_si256(raw_weights, 1)
-            );
-            const __m256i product_low = _mm256_mullo_epi32(
-                _mm256_mullo_epi32(value32_low, value32_low),
-                weight32_low
-            );
-            const __m256i product_high = _mm256_mullo_epi32(
-                _mm256_mullo_epi32(value32_high, value32_high),
-                weight32_high
-            );
-
-            total64 = _mm256_add_epi64(total64, _mm256_cvtepi32_epi64(
-                _mm256_castsi256_si128(product_low)
-            ));
-            total64 = _mm256_add_epi64(total64, _mm256_cvtepi32_epi64(
-                _mm256_extracti128_si256(product_low, 1)
-            ));
-            total64 = _mm256_add_epi64(total64, _mm256_cvtepi32_epi64(
-                _mm256_castsi256_si128(product_high)
-            ));
-            total64 = _mm256_add_epi64(total64, _mm256_cvtepi32_epi64(
-                _mm256_extracti128_si256(product_high, 1)
-            ));
-        }
-    }
-
-    alignas(32) std::array<std::int64_t, 4> lanes{};
-    _mm256_storeu_si256(reinterpret_cast<__m256i*>(lanes.data()), total64);
-    return lanes[0] + lanes[1] + lanes[2] + lanes[3];
-}
-#endif
-
 [[nodiscard]] Value forward(
     const Position& position,
     const Network& network,
@@ -601,11 +514,13 @@ void apply_incremental(
 
 #if defined(__AVX2__)
     std::int64_t output = use_native_backend
-        ? dot_pair_avx2(stm, stm_weights, nstm, nstm_weights)
-        : dot_pair_scalar(stm, stm_weights, nstm, nstm_weights);
+        ? (network.has_fast_output_weights()
+            ? detail::dot_pair_avx2_narrow(stm, stm_weights, nstm, nstm_weights)
+            : detail::dot_pair_avx2_wide(stm, stm_weights, nstm, nstm_weights))
+        : detail::dot_pair_scalar(stm, stm_weights, nstm, nstm_weights);
 #else
     (void)use_native_backend;
-    std::int64_t output = dot_pair_scalar(stm, stm_weights, nstm, nstm_weights);
+    std::int64_t output = detail::dot_pair_scalar(stm, stm_weights, nstm, nstm_weights);
 #endif
     output /= P2H32::QA;
     output += network.output_biases()[bucket];
