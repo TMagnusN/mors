@@ -13,15 +13,15 @@
 
 **MORS** 是由 [Theodore Magnus Øen & Codex](AUTHORS) 獨立實作、持續開發中的 C++23 西洋棋引擎。MORS 透過[通用西洋棋介面（UCI）][uci-link]通訊，因此既能在終端機中使用，也能安裝到支援 UCI 的西洋棋圖形介面。
 
-目前的開發版本為 **MORS 0.0.1-dev**。MORS 支援標準西洋棋與 Chess960，並刻意維持單搜尋執行緒，先讓搜尋、評估與引擎基礎設施成熟。
+目前的開發版本為 **Dragon of MORS 0.2.0-dev**。MORS 支援標準西洋棋與 Chess960，使用持久化 Lazy SMP 搜尋執行緒，可設定 1–22,528 執行緒，預設為 1。
 
 ## 主要功能
 
-- 使用 aspiration window 的單執行緒 iterative-deepening Principal Variation Search。
+- 使用 aspiration window 的 iterative-deepening Principal Variation Search，以及共享 TT 的持久化 Lazy SMP workers。
 - 增量更新的 P2-H32 神經網路評估。
-- Clustered transposition table，可透過 UCI `Hash` 設定 1–32768 MiB。
-- Check-aware quiescence search；未被將軍時只生成 noisy moves。
-- Static Exchange Evaluation，以及 history、killer、countermove 和 TT move ordering。
+- Clustered transposition table，可透過 UCI `Hash` 設定 1–8,589,934,592 MiB（8 PiB）。
+- Check-aware quiescence search，整合 TT 讀寫、non-PV bound cutoff、raw static-eval 快取、SEE 與 late-move pruning；未被將軍時只生成 noisy moves。
+- Static Exchange Evaluation，以及 TT、killer、countermove、butterfly、continuation 和 noisy history 走法排序；各 worker 的私有 history 跨搜尋保留。
 - Reverse／forward futility pruning、帶 verification 的 null-move pruning、late-move pruning／reduction、internal iterative reduction，以及包含 multi-cut 處理的 singular extension。
 - 標準西洋棋與 Chess960 的合法走法生成、make/unmake、Zobrist hashing、重複局面、五十步規則與子力不足和棋判定。
 - 內建且經 provenance 驗證的預設網路，也可透過 `EvalFile` 載入外部網路。
@@ -107,7 +107,7 @@ make -C src -j$(nproc) all-versions
 make -C src -j$(nproc) CONFIG=debug ARCH=avx2+bmi2 LTO=0 test-run
 ```
 
-測試涵蓋 attacks、直接與參考合法走法生成、perft 局面、make/unmake 與 Zobrist 還原、SEE、TT 行為、增量神經網路評估、搜尋 invariants、時間管理、UCI 行為，以及 BulletFormat datagen records。
+測試涵蓋 attacks、直接與參考合法走法生成、perft 局面、make/unmake 與 Zobrist 還原、SEE、TT 行為、增量神經網路評估、搜尋 invariants、qsearch TT 存取、worker history 持久化、共享節點限制、時間管理、UCI 行為，以及 BulletFormat datagen records。
 
 也可使用下列獨立 targets：
 
@@ -145,8 +145,8 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 
 | 選項 | 範圍／預設值 | 說明 |
 |---|---|---|
-| `Threads` | 1 | MORS 目前為單執行緒。 |
-| `Hash` | 1–32768 MiB；預設 16 MiB | Transposition table 容量。 |
+| `Threads` | 1–22,528；預設 1 | 持久化 Lazy SMP workers，共享 TT，各自保有獨立搜尋狀態；實際建立數量受可用系統資源限制。 |
+| `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 16 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
 | `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |
 | `EvalFile` | 預設使用內建網路 | 載入相容的外部 P2-H32 網路。 |
@@ -170,7 +170,6 @@ MORS 是持續開發中的實驗性軟體。搜尋技術與神經網路必須先
 
 目前刻意不包含：
 
-- 多執行緒搜尋；
 - Syzygy tablebases；
 - 引擎內部 opening-book play。
 

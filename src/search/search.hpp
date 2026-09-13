@@ -94,7 +94,7 @@ struct SearchResult final {
     std::size_t pv_length = 0;
 };
 
-inline constexpr std::size_t MAX_SEARCH_THREADS = 256;
+inline constexpr std::size_t MAX_SEARCH_THREADS = 22'528;
 
 // Owns a persistent set of Lazy SMP search threads. Jobs are asynchronous:
 // every worker searches an isolated root copy while sharing the TT and stop

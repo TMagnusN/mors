@@ -14,6 +14,8 @@
 namespace mors {
 
 inline constexpr std::size_t DEFAULT_TT_SIZE_MB = 16;
+// 2^48 index values * 32 bytes per cluster = 8 PiB, expressed in MiB.
+inline constexpr std::size_t MAX_TT_SIZE_MB = std::size_t{1} << 33;
 
 namespace detail {
 struct TTCluster;

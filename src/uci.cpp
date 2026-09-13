@@ -175,7 +175,7 @@ public:
                      << "option name Threads type spin default 1 min 1 max "
                      << MAX_SEARCH_THREADS << "\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
-                     << " min 1 max 32768\n"
+                     << " min 1 max " << MAX_TT_SIZE_MB << "\n"
                      << "option name Clear Hash type button\n"
                      << "option name UCI_Chess960 type check default false\n"
                      << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
@@ -346,8 +346,9 @@ private:
 
         std::size_t megabytes = 0;
         if (!parse_integer(value_text, megabytes)
-            || megabytes < 1 || megabytes > 32'768) {
-            emit(output, "info string Hash must be between 1 and 32768 MB\n");
+            || megabytes < 1 || megabytes > MAX_TT_SIZE_MB) {
+            emit(output, "info string Hash must be between 1 and "
+                + std::to_string(MAX_TT_SIZE_MB) + " MiB\n");
             return;
         }
         try {

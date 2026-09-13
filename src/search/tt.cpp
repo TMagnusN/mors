@@ -310,7 +310,8 @@ TranspositionTable::~TranspositionTable() = default;
 void TranspositionTable::resize(std::size_t megabytes) {
     if (megabytes == 0)
         throw std::invalid_argument("TT size must be at least one megabyte");
-    if (megabytes > std::numeric_limits<std::size_t>::max() / BYTES_PER_MEGABYTE)
+    if (megabytes > MAX_TT_SIZE_MB
+        || megabytes > std::numeric_limits<std::size_t>::max() / BYTES_PER_MEGABYTE)
         throw std::length_error("TT size is too large");
 
     const std::size_t bytes = megabytes * BYTES_PER_MEGABYTE;

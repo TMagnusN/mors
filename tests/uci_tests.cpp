@@ -75,6 +75,9 @@ bool run_uci_tests() {
              << "isready\n"
              << "setoption name Threads value 4\n"
              << "setoption name Threads value 0\n"
+             << "setoption name Threads value 22529\n"
+             << "setoption name Hash value 0\n"
+             << "setoption name Hash value 8589934593\n"
              << "setoption name Hash value 2\n"
              << "setoption name Clear Hash\n"
              << "setoption name EvalFile value " << network.string() << "\n"
@@ -112,18 +115,28 @@ bool run_uci_tests() {
     const bool passed =
            expect_contains(
                text,
-               "MORS 0.2.0-dev by Theodore M. A. Øen & Codex (see AUTHORS file)\n",
+               "Dragon of MORS 0.2.0-dev by Theodore M. A. Øen (USA) & Codex (USA) (see AUTHORS file)\n",
                "startup banner must credit both authors"
            )
-        && expect_contains(text, "id name MORS 0.2.0-dev\n", "engine id must be emitted")
-        && expect_contains(text, "id author Theodore M. A. Øen & Codex\n",
+        && expect_contains(text, "id name Dragon of MORS 0.2.0-dev\n", "engine id must be emitted")
+        && expect_contains(text, "id author Theodore M. A. Øen (USA) & Codex (USA)\n",
                            "author id must be emitted")
+        && expect_contains(text, "option name Hash type spin default 16 min 1 max 8589934592\n",
+                           "Hash must advertise the 8 PiB limit in MiB")
+        && expect(occurrence_count(text,
+                       "info string Hash must be between 1 and 8589934592 MiB\n") == 2,
+                  "zero and above-limit Hash values must be rejected")
+        && expect_not_contains(text, "Hash resize failed:",
+                               "invalid sizes must be rejected before allocation")
         && expect_contains(text, "uciok\n", "uci handshake must complete")
         && expect_contains(text, "readyok\n", "readiness handshake must complete")
-        && expect_contains(text, "option name Threads type spin default 1 min 1 max 256\n",
+        && expect_contains(text, "option name Threads type spin default 1 min 1 max 22528\n",
                            "persistent thread-pool range must be advertised")
-        && expect_contains(text, "info string Threads must be between 1 and 256\n",
-                           "invalid thread count must be rejected")
+        && expect(occurrence_count(text,
+                       "info string Threads must be between 1 and 22528\n") == 2,
+                  "zero and above-limit thread counts must be rejected")
+        && expect_not_contains(text, "Threads resize failed:",
+                               "invalid thread counts must be rejected before allocation")
         && expect_contains(text, "option name Move Overhead type spin",
                            "time safety option must be advertised")
         && expect_contains(text, "option name EvalFile type string",

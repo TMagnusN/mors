@@ -13,15 +13,15 @@
 
 **MORS** is an independent, actively developed chess engine written in C++23 by [Theodore Magnus Øen & Codex](AUTHORS). It communicates through the [Universal Chess Interface][uci-link], so it can run in a terminal or inside a UCI-compatible chess GUI.
 
-The current development version is **MORS 0.0.1-dev**. MORS supports standard chess and Chess960, and deliberately uses one search thread while its search, evaluation, and engine infrastructure mature.
+The current development version is **Dragon of MORS 0.2.0-dev**. MORS supports standard chess and Chess960, with persistent Lazy SMP search workers and a configurable 1–22,528 thread count (default: 1).
 
 ## Highlights
 
-- Single-threaded iterative-deepening Principal Variation Search with aspiration windows.
+- Iterative-deepening Principal Variation Search with aspiration windows and persistent Lazy SMP workers sharing the transposition table.
 - Incrementally updated P2-H32 neural evaluation.
-- Clustered transposition table with a configurable 1–32768 MiB UCI Hash option.
-- Check-aware quiescence search that generates only noisy moves outside check.
-- Static Exchange Evaluation, history, killer, countermove, and transposition-table move ordering.
+- Clustered transposition table with a configurable 1–8,589,934,592 MiB (8 PiB) UCI Hash option.
+- Check-aware quiescence search with TT probe/store, non-PV bound cutoffs, raw static-evaluation caching, SEE and late-move pruning; outside check it generates only noisy moves.
+- Static Exchange Evaluation and TT, killer, countermove, butterfly, continuation and noisy-history move ordering. Worker-private histories persist across searches.
 - Reverse and forward futility pruning, null-move pruning with verification, late-move pruning and reductions, internal iterative reduction, and singular extension with multi-cut handling.
 - Legal move generation for standard chess and Chess960, make/unmake, Zobrist hashing, repetition detection, the fifty-move rule, and insufficient-material detection.
 - An embedded, provenance-verified default network with optional external network loading through `EvalFile`.
@@ -107,7 +107,7 @@ Run the complete debug test suite for the target architecture:
 make -C src -j$(nproc) CONFIG=debug ARCH=avx2+bmi2 LTO=0 test-run
 ```
 
-The suite covers attack generation, direct and reference legal move generation, perft positions, make/unmake and Zobrist restoration, SEE, transposition-table behavior, incremental neural evaluation, search invariants, time management, UCI behavior, and BulletFormat datagen records.
+The suite covers attack generation, direct and reference legal move generation, perft positions, make/unmake and Zobrist restoration, SEE, transposition-table behavior, incremental neural evaluation, search invariants, qsearch TT storage/reuse, persistent worker histories, shared node limits, time management, UCI behavior, and BulletFormat datagen records.
 
 Useful standalone targets include:
 
@@ -145,8 +145,8 @@ For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts bo
 
 | Option | Range/default | Description |
 |---|---|---|
-| `Threads` | 1 | MORS is currently single-threaded. |
-| `Hash` | 1–32768 MiB; default 16 MiB | Transposition-table capacity. |
+| `Threads` | 1–22,528; default 1 | Persistent Lazy SMP workers with a shared TT and private search state; creation depends on available system resources. |
+| `Hash` | 1–8,589,934,592 MiB (8 PiB); default 16 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
 | `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
 | `EvalFile` | Embedded network by default | Loads a compatible external P2-H32 network. |
@@ -170,7 +170,6 @@ MORS is experimental software under active development. Search techniques and ne
 
 The current scope intentionally excludes:
 
-- multi-threaded search;
 - Syzygy tablebases;
 - opening-book play inside the engine.
 

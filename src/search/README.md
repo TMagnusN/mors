@@ -1,8 +1,8 @@
 # MORS Search 數值與 TT 契約
 
-本文件先固定 Search 使用的數值語意，再開始實作 `search.hpp/.cpp`。目標是讓 NNUE、PVS、qsearch、SEE、move ordering 與 Transposition Table（TT）共用清楚的契約，而不是把所有整數都當成同一種「分數」。
+本文件記錄 `search.hpp/.cpp` 的實作狀態與 Search 使用的數值契約。目標是讓 NNUE、PVS、qsearch、SEE、move ordering 與 Transposition Table（TT）共用清楚的契約，而不是把所有整數都當成同一種「分數」。
 
-## 第一版實作狀態
+## 目前實作狀態
 
 Iterative deepening 在第一層完成後，以前一層分數為中心使用 aspiration
 window。初始半窗為 16 centipawns；fail-low 只擴張 alpha，fail-high 只擴張
@@ -14,13 +14,21 @@ deepening depth 後停止；hard deadline 每 64 nodes 輪詢並立即傳播
 `VALUE_NONE`，確保 make/unmake 與增量 NNUE 狀態仍完整還原。UCI search
 在背景執行，外部 `stop` 透過 atomic flag 使用相同的取消路徑。
 
-`search.hpp/.cpp` 已提供單執行緒 iterative-deepening PVS：第一個著法使用完整窗口，後續著法先做 null-window probe，只有改善 alpha 且尚未 fail-high 時才完整重搜。第一版同時接入 check-aware qsearch、增量 NNUE、TT probe/store、TT move ordering、mate-distance normalization、repetition、50-move、insufficient-material、PV 與 hard node limit。
+`search.hpp/.cpp` 已提供各 worker 獨立執行的 iterative-deepening PVS：第一個著法使用完整窗口，後續著法先做 null-window probe，只有改善 alpha 且尚未 fail-high 時才完整重搜。第一版同時接入 check-aware qsearch、增量 NNUE、TT probe/store、TT move ordering、mate-distance normalization、repetition、50-move、insufficient-material、PV 與 hard node limit。
 
 目前已加入 TT raw static-eval cache、non-PV reverse futility/null-move pruning、
 跨 UCI go 保留的 worker-private butterfly quiet history、killer/countermove ordering、
 main-search LMP/LMR、forward futility、singular extension 與 Lazy SMP，以及
 Reckless-style qsearch threshold SEE 與 noisy late-move pruning。
-目前尚未實作 noisy history、continuation history 與 correction history。
+目前已實作 worker-private continuation history 與 noisy history，參與走法排序與
+主搜尋 SEE 門檻；correction history 尚未實作。
+
+qsearch 已整合 TT probe/store，以 `DEPTH_QS` 保存結果；只有 non-PV 節點可依
+有效 depth/bound 截斷，PV 節點仍搜尋以保留主變例。Raw static eval 可從 TT 重用，
+stand-pat fail-high 存為 lower bound；完成搜尋後依原始窗口保存 upper/lower/exact。
+Mate 與 rule-50 分數轉換沿用主搜尋契約，中斷的子搜尋不發布部分結果。
+合法的安靜 TT move 若不在 noisy list 中，仍可使用其分數與 raw eval，但不加入
+非將軍 qsearch 的走法。TT 排序優先級不能當作 SEE 通過的證據。
 
 ## 分數領域總覽
 
@@ -361,7 +369,7 @@ History 可用於 MovePicker band 內排序、LMR reduction 調整及 history pr
 16 KiB／worker，上限仍為 8192，cutoff bonus/malus 與讀取規則不變。
 尚未加入起點／終點受攻擊狀態維度。
 
-Quiet history 位於各 worker 私有且持久的 `ThreadData`，連續 UCI `go` 保留學習。
+Quiet、continuation 與 noisy history 位於各 worker 私有且持久的 `ThreadData`，連續 UCI `go` 保留學習。
 `ucinewgame` 透過 `SearchThreadPool::clear()` 重建所有 ThreadData，再清空 TT；
 OS threads 保留。搜尋中禁止 clear／resize，改變 thread count 會重建各 worker
 的歷史。`Clear Hash` 僅清 TT；獨立同步 `search()` 每次使用新的 ThreadData。
@@ -389,6 +397,14 @@ Killer、countermove、PV、repetition keys 與 NNUE 搜尋堆疊仍屬於每次
 - `VALUE_NONE` / `VALUE_INFINITE`：永不輸出。
 
 搜尋核心不包含字串格式化，也不為 UCI mate moves 改變內部以 ply 表示的距離。
+
+## Hash 容量上限
+
+UCI 與 TT resize 共用 `MAX_TT_SIZE_MB = 8,589,934,592` MiB，也就是 8 PiB。
+索引使用 Zobrist key 的高 48 bits，每個 cluster 為 32 bytes，因此完整利用
+索引的容量界線是 `2^48 × 32 = 2^53` bytes。實際配置仍受可用記憶體、
+作業系統位址空間與配置器限制；提高選項上限不代表能在一般機器配置 8 PiB。
+預設 Hash 維持 16 MiB，超限輸入在配置前拒絕。
 
 ## 目前 TT 版面
 
@@ -548,7 +564,7 @@ search.cpp private Context
 |-- SearchStack[MAX_PLY + guard]
 |-- repetition keys
 |-- PV table / root moves
-|-- ThreadData& -> worker-private QuietHistory
+|-- ThreadData& -> worker-private quiet/continuation/noisy history
 |-- node/depth counters
 `-- limits / stop state
 ```
@@ -560,14 +576,17 @@ search.cpp private Context
 network 與支援並行 probe/write 的 TT。
 Main 完成後會發布停止，pool 等全部 helper 回到 idle 才送出 completion callback。
 
-建議檔案責任：
+UCI 與 `SearchThreadPool::resize()` 共用 `MAX_SEARCH_THREADS = 22,528`，
+預設為 1；實際建立數量受作業系統與可用記憶體限制。超限輸入在建立 worker 前拒絕。
+
+目前檔案責任與後續拆分方向：
 
 - `chess/types.hpp`：底層 `Value`/`Depth` 型別與全域保留數值區間。
 - `search/score.hpp`：mate、decisive predicates、TT normalization、eval clamp helper。
 - `search/see.hpp/.cpp`：`SeeValue`、piece values 與 `see_ge()`。
 - `search/search.hpp/.cpp`：iterative deepening、PVS、qsearch 與私有 Context。
-- `search/move_picker.hpp/.cpp`：`MoveScore` category 與 staged generation。
-- `search/history.hpp`：history/correction 的有界更新。
+- 走法排序目前位於 `search.cpp`，使用完整列表排序；`search/move_picker.hpp/.cpp` 與 staged generation 為後續拆分方向，尚未實作。
+- History 的有界更新目前位於 `search.cpp`；獨立 `search/history.hpp` 與 correction history 尚未實作。
 
 ## 並行邊界
 
@@ -643,7 +662,7 @@ PAWN 記錄，無吃子升變按 NO_PIECE_TYPE 記錄）。這是 MORS 的索引
 新 history 與 quiet history 同樣為 worker 私有、跨 job 保留並隨 clear/resize 重建。
 安靜步 beta cutoff 更新 quiet/continuation history，非安靜步 cutoff 更新 noisy
 history，已搜尋但失敗的對應走法扣分；跳過的走法不訓練。Continuation 不跨空步。
-目前組合 history 只供新增 SEE 剪枝使用，原有排序、FP、LMP、LMR 仍用既有分數。
+目前安靜步排序使用 butterfly 加前 1、2 層 continuation history，非安靜步排序在材料分數上加入 noisy history。TT、killer、countermove 優先級與 SEE 好／壞分組保留；FP、LMP、LMR 仍使用原有 butterfly history。
 
 根節點、excluded search、尚未搜尋任何走法、best score 仍屬 loss，以及被將軍時的
 安靜應將步不做主搜尋 SEE 剪枝。`SearchLimits::use_see_pruning` 預設開啟；關閉
