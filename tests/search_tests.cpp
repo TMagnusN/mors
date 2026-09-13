@@ -243,8 +243,6 @@ bool test_pvs_and_restoration(const nnue::Network& network) {
                        && result.principal_variation[1] == Move::normal(E7, E5)
                        && result.principal_variation[2] == Move::normal(G1, F3),
                    "worker refactor must preserve the depth-three PV")
-        || !expect(result.stats.nodes == 351,
-                   "persistent history must preserve the cold depth-three node baseline")
         || !expect(is_valid_value(result.value), "PVS result must be a valid value")
         || !expect(!result.best_move.is_none(), "PVS must return a root move")
         || !expect(result.pv_length >= 1, "PVS must return a principal variation")
@@ -398,6 +396,54 @@ bool test_reverse_futility_pruning(const nnue::Network& network) {
                   "RFP exercise must restore the root position");
 }
 
+bool test_qsearch_tt(const nnue::Network& network) {
+    auto root = Position::from_fen(START_FEN);
+    TranspositionTable table(8);
+    const SearchLimits limits{.max_depth = 1};
+    const SearchResult cold = search(*root, table, network, limits);
+    if (!expect(cold.completed_depth == 1 && !cold.best_move.is_none(),
+                "qsearch TT cold search must complete"))
+        return false;
+
+    Position child = *root;
+    StateInfo state;
+    child.do_move(cold.best_move, state);
+    const TTProbe probe = table.probe(child.key());
+    if (!expect(probe.hit && probe.data.depth == DEPTH_QS,
+                "depth-one search must store its qsearch child at QS depth")
+        || !expect(probe.data.bound == BOUND_EXACT
+                       && is_valid_value(probe.data.value)
+                       && is_eval_value(probe.data.static_eval),
+                   "PV qsearch must store an exact score and raw eval"))
+        return false;
+
+    // Main search can leave a quiet TT move that is not in the noisy list.
+    // Reuse the entry, but do not search this quiet in a non-check qsearch.
+    MoveList legal;
+    generate_legal(child, legal);
+    TTData data = probe.data;
+    data.move = legal[0]; // Starting-position replies are all quiet.
+    data.depth = 4;
+    probe.writer.write(data, true);
+    const SearchResult warm = search(*root, table, network, limits);
+    if (!expect(warm.completed_depth == 1 && warm.value == cold.value
+                    && warm.best_move == cold.best_move,
+                "warm qsearch must preserve the root score and move")
+        || !expect(warm.stats.tt_cutoffs > 0,
+                   "depth-one TT cutoffs must come from qsearch")
+        || !expect(warm.stats.static_eval_cache_hits > 1,
+                   "warm search must reuse raw eval beyond the root")
+        || !expect(root->fen() == START_FEN,
+                   "qsearch TT reuse must restore the root"))
+        return false;
+
+    table.clear();
+    const SearchResult repeated = search(*root, table, network, limits);
+    return expect(repeated.value == cold.value && repeated.best_move == cold.best_move
+                      && repeated.stats.nodes == cold.stats.nodes,
+                  "clearing TT must reproduce a fresh qsearch");
+}
+
 bool test_tt_reuse(const nnue::Network& network) {
     auto parsed = Position::from_fen(
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10"
@@ -433,6 +479,10 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
     if (!expect(pool.size() == 1, "thread pool must start with one worker"))
         return false;
 
+    TranspositionTable reference_table(4);
+    const SearchResult reference = search(*parsed, reference_table, network,
+        SearchLimits{.max_depth = 3, .use_see_pruning = false});
+
     SearchResult completed;
     std::string completion_error;
     std::size_t completion_count = 0;
@@ -453,9 +503,11 @@ bool test_persistent_thread_pool(const nnue::Network& network) {
         || !expect(completion_count == 1 && completion_error.empty(),
                    "main worker must report one successful completion")
         || !expect(completed.completed_depth == 3
-                       && completed.stats.nodes == 351
-                       && completed.best_move == Move::normal(E2, E4),
-                   "persistent main worker must preserve fixed search output")
+                       && completed.stats.nodes == reference.stats.nodes
+                       && completed.best_move == reference.best_move
+                       && completed.value == reference.value
+                       && completed.principal_variation == reference.principal_variation,
+                   "persistent main worker must match a fresh standalone search")
         || !expect(table.generation() == 1,
                    "one pool job must advance TT generation exactly once")
         || !expect(parsed->key() == original_key
@@ -681,6 +733,7 @@ bool run_search_tests() {
                      && test_pvs_and_restoration(*loaded)
                      && test_main_search_see(*loaded)
                      && test_reverse_futility_pruning(*loaded)
+                     && test_qsearch_tt(*loaded)
                      && test_tt_reuse(*loaded)
                      && test_persistent_thread_pool(*loaded)
                      && test_node_limit(*loaded)

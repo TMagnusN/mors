@@ -467,8 +467,10 @@ private:
             == move;
 }
 
+int see_history(Context& context, Move move, int ply, bool quiet) noexcept;
+
 [[nodiscard]] int move_order_score(
-    const Context& context,
+    Context& context,
     Move move,
     Move tt_move,
     int ply
@@ -484,10 +486,8 @@ private:
             return KILLER_MOVE_SCORE;
         if (is_counter_move(context, move, ply))
             return COUNTER_MOVE_SCORE;
-        return context.thread_data.quiet_history[
-            static_cast<std::size_t>(position.side_to_move())
-        ][static_cast<std::size_t>(move.from())]
-         [static_cast<std::size_t>(move.to())];
+        // Reuse butterfly + one- and two-ply continuation history.
+        return see_history(context, move, ply, true);
     }
 
     const Piece moving_piece = position.piece_on(move.from());
@@ -509,11 +509,11 @@ private:
     const int material_order = 16 * (victim_value + promotion_gain)
                              - see_piece_value(type_of(moving_piece));
     return (see_ge(position, move, 0) ? GOOD_NOISY_SCORE : BAD_NOISY_SCORE)
-         + material_order;
+         + material_order + see_history(context, move, ply, false);
 }
 
 void order_moves(
-    const Context& context,
+    Context& context,
     MoveList& moves,
     int ply,
     Move tt_move = {},
@@ -1225,6 +1225,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
 ) noexcept {
     assert(alpha < beta);
     assert(ply >= 0 && ply <= MAX_PLY);
+    const bool pv_node = beta - alpha > 1;
     clear_pv(context, ply);
 
     if (!begin_node(context, ply, true))
@@ -1249,21 +1250,63 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     if (alpha >= beta)
         return alpha;
 
+    const Value original_alpha = alpha;
+    TTProbe probe = context.table.probe(context.position.key());
+    bool tt_hit = probe.hit;
+    Move tt_move{};
+    if (tt_hit) {
+        ++context.stats.tt_hits;
+        // A main-search entry may contain a legal quiet move absent from our
+        // noisy list. Validate it without discarding its score or raw eval.
+        if (!contains_move(moves, probe.data.move)) {
+            MoveList legal;
+            generate_legal(context.position, legal);
+            tt_hit = contains_move(legal, probe.data.move);
+        }
+        if (tt_hit) {
+            if (contains_move(moves, probe.data.move))
+                tt_move = probe.data.move;
+            const Value tt_value = value_from_tt(
+                probe.data.value, ply, context.position.halfmove_clock());
+            const bool bound_ok = probe.data.bound == BOUND_EXACT
+                || (probe.data.bound == BOUND_LOWER && tt_value >= beta)
+                || (probe.data.bound == BOUND_UPPER && tt_value <= alpha);
+            // Keep PV nodes searchable so a cached score cannot truncate PV.
+            if (!pv_node && tt_value != VALUE_NONE
+                && probe.data.depth >= DEPTH_QS && bound_ok) {
+                ++context.stats.tt_cutoffs;
+                return tt_value;
+            }
+        }
+    }
+
     Value best_value = -VALUE_INFINITE;
+    Move best_move{};
     Value stand_pat = VALUE_NONE;
     if (!checked) {
-        stand_pat = context.evaluator.evaluate(
-            context.position,
-            context.network
-        );
+        if (tt_hit && is_eval_value(probe.data.static_eval)) {
+            stand_pat = probe.data.static_eval;
+            ++context.stats.static_eval_cache_hits;
+        } else {
+            stand_pat = context.evaluator.evaluate(context.position, context.network);
+        }
         best_value = stand_pat;
-        if (stand_pat >= beta)
+        if (stand_pat >= beta) {
+            probe.writer.write({
+                .move = {},
+                .value = value_to_tt(stand_pat, ply),
+                .static_eval = stand_pat,
+                .depth = DEPTH_QS,
+                .bound = BOUND_LOWER,
+                .pv = pv_node
+            });
             return stand_pat;
+        }
         alpha = std::max(alpha, stand_pat);
     }
 
     std::array<int, MAX_MOVES> ordered_scores{};
-    order_moves(context, moves, ply, {}, &ordered_scores);
+    order_moves(context, moves, ply, tt_move, &ordered_scores);
     std::size_t noisy_move_count = 0;
     for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
         const Move move = moves[move_index];
@@ -1296,7 +1339,8 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             );
             // Ordering already classified every noisy move with SEE >= 0.
             // Reuse that result whenever it proves this looser threshold.
-            const bool ordered_good = ordered_scores[move_index] > 0;
+            // TT priority is not evidence of a non-losing exchange.
+            const bool ordered_good = move != tt_move && ordered_scores[move_index] > 0;
             const bool passes_see = (ordered_good && see_threshold <= 0)
                 || see_ge(context.position, move, see_threshold);
             if (!passes_see) {
@@ -1317,17 +1361,29 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             score = -child;
         }
 
-        if (score > best_value)
+        if (score > best_value) {
             best_value = score;
+            best_move = move;
+        }
         if (score > alpha) {
             alpha = score;
             update_pv(context, ply, move);
         }
         if (alpha >= beta)
-            return best_value;
+            break;
     }
 
     assert(best_value != -VALUE_INFINITE);
+    // Interrupted children return above, before publishing a partial bound.
+    probe.writer.write({
+        .move = best_move,
+        .value = value_to_tt(best_value, ply),
+        .static_eval = stand_pat,
+        .depth = DEPTH_QS,
+        .bound = best_value >= beta ? BOUND_LOWER
+               : best_value <= original_alpha ? BOUND_UPPER : BOUND_EXACT,
+        .pv = pv_node
+    });
     return best_value;
 }
 
