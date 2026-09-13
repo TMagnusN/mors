@@ -73,6 +73,8 @@ bool run_uci_tests() {
     std::ostringstream commands;
     commands << "uci\n"
              << "isready\n"
+             << "setoption name NumaPolicy value none\n"
+             << "setoption name NumaPolicy value invalid\n"
              << "setoption name Threads value 4\n"
              << "setoption name Threads value 0\n"
              << "setoption name Threads value 22529\n"
@@ -100,6 +102,7 @@ bool run_uci_tests() {
              << "stop\n"
              << "ucinewgame\n"
              << "setoption name Threads value 1\n"
+             << "setoption name NumaPolicy value auto\n"
              << "position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\n"
              << "go wtime 1000 btime 1000 winc 10 binc 10 movestogo 20\n"
              << "stop\n"
@@ -143,7 +146,19 @@ bool run_uci_tests() {
                            "network path option must be advertised")
         && expect_contains(text, "option name UCI_Chess960 type check default false\n",
                            "Chess960 mode must be advertised")
-        && expect_contains(text, "info string Available processors: 0-",
+        && expect_contains(text, "option name NumaPolicy type combo default auto var auto var none\n",
+                           "NUMA policy must be advertised")
+        && expect_contains(text, "info string NumaPolicy must be auto or none\n",
+                           "invalid NUMA policy must be rejected")
+        && expect_contains(text, "info string NUMA policy: none (OS scheduling)\n",
+                           "none must disable binding")
+        && expect_contains(text, "info string NUMA policy: auto",
+                           "auto must be restored")
+        && expect_not_contains(text, "NumaPolicy change failed:",
+                               "NUMA policy changes must succeed")
+        && expect_not_contains(text, "EvalFile replica preparation failed:",
+                               "valid replacement networks must prepare successfully")
+        && expect_contains(text, "info string Available processors:",
                            "go must report available processors")
         && expect_contains(
                text,
@@ -158,8 +173,10 @@ bool run_uci_tests() {
                "(26MiB, P2-H32 (10240->768, 22528->256, 64))\n",
                "go must report the active NNUE architecture"
            )
-        && expect_contains(text, "info string Network replica 1: Local memory.\n",
-                           "go must report the network replica")
+        && expect_contains(text, "info string Network replicas: 1 shared (OS placement)\n",
+                           "unbound workers must report OS placement")
+        && expect_not_contains(text, "Local memory.",
+                               "must not claim verified physical locality")
         && expect(
                text.find("info string Using 1 thread\n") < text.find("info depth 1 "),
                "search configuration must precede depth output"

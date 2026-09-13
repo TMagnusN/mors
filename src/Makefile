@@ -175,6 +175,7 @@ NETWORK_VERIFICATION_STAMP := $(OBJ_DIR)/resources/mors-network-verified.stamp
 # ---------------------------------------------------------------------------
 
 CORE_SOURCES := \
+    platform/numa.cpp \
     chess/bitboard.cpp \
     chess/attacks.cpp \
     chess/zobrist.cpp \
@@ -209,6 +210,7 @@ ENGINE_OBJECTS := \
     $(UCI_OBJECT)
 
 TEST_OBJECTS := \
+    $(OBJ_DIR)/tests/numa_tests.o \
     $(OBJ_DIR)/tests/attacks_tests.o \
     $(OBJ_DIR)/tests/zobrist_tests.o \
     $(OBJ_DIR)/tests/score_tests.o \

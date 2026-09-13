@@ -147,10 +147,18 @@ For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts bo
 |---|---|---|
 | `Threads` | 1–22,528; default 1 | Persistent Lazy SMP workers with a shared TT and private search state; creation depends on available system resources. |
 | `Hash` | 1–8,589,934,592 MiB (8 PiB); default 16 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
+| `NumaPolicy` | `auto` / `none`; default `auto` | Bind workers and replicate NNUE on used NUMA nodes when multiple nodes or processor groups are available; `none` uses OS scheduling and one shared network. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
 | `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
 | `EvalFile` | Embedded network by default | Loads a compatible external P2-H32 network. |
 | `Move Overhead` | 0–5000 ms; default 10 ms | Reserves time for GUI, scheduling, and communication delay. |
+
+`NumaPolicy=auto` uses physical cores before SMT siblings when binding is active.
+Worker history is initialized after binding, and NNUE replicas use preferred-node
+allocation. A single node/group retains OS scheduling; `none` disables binding
+and replication. The shared TT still uses its existing allocator. For concurrent
+engine processes, use separate external CPU affinities or `none`; automatic
+placement does not reserve CPUs across processes. See [NUMA details](src/platform/README.md).
 
 ## Project Layout
 

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <iosfwd>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -76,6 +77,10 @@ public:
         std::span<const std::byte> bytes,
         std::filesystem::path source
     );
+
+    // Deep copy into freshly allocated pages. A node requests NUMA placement;
+    // call from a worker bound to that node before publishing the replica.
+    [[nodiscard]] Network clone(std::optional<unsigned> node = std::nullopt) const;
 
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] std::int32_t scale() const noexcept;

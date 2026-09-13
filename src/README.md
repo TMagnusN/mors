@@ -2,7 +2,7 @@
 
 Release 建置會產生 `mors-<arch>.exe` UCI 引擎。目前支援 `uci`、
 `isready`、`ucinewgame`、`setoption name Threads`（1–22,528）、`Hash`、`Clear Hash`、
-`Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
+`NumaPolicy`（auto／none）、`Move Overhead`、`position startpos|fen ... moves ...`、`go depth <n>`、
 `go nodes <n>`、`go movetime <ms>`、`wtime/btime/winc/binc/movestogo`、
 `go infinite`、`stop` 與 `quit`。搜尋由 persistent Lazy SMP ThreadPool 在背景
 執行，`stop` 以 cooperative cancellation 結束目前 iteration 並回傳 main worker
@@ -14,6 +14,9 @@ Release UCI executable 會在編譯時嵌入 provenance 驗證過的預設 NNUE�
 選項設回預設檔名會重新使用內建網路。
 每次有效的 `go` 會在第一條 depth 資訊前回報可用處理器、實際 active thread 數、
 NNUE 架構及 network replica 狀態。
+NUMA 偵測、CPU 綁定及節點記憶體配置目前位於 `platform/numa.hpp/.cpp`，
+由現有 `SearchThreadPool` 整合；下方 `runtime` 拆分仍是架構規劃。
+實際配置與生命週期詳見 [platform/README.md](platform/README.md)。
 
 本目錄預計承載一個完全獨立設計與實作的現代化西洋棋引擎。UCI、引擎協調、搜尋、棋盤核心、評估與平台最佳化各自有明確邊界。
 

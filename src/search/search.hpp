@@ -5,6 +5,7 @@
 #pragma once
 
 #include "chess/move.hpp"
+#include "platform/numa.hpp"
 
 #include <atomic>
 #include <array>
@@ -16,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <string>
 
 namespace mors {
 
@@ -100,7 +102,9 @@ inline constexpr std::size_t MAX_SEARCH_THREADS = 22'528;
 // every worker searches an isolated root copy while sharing the TT and stop
 // state. The main worker remains authoritative for iteration reports and the
 // final result. Quiet, continuation and noisy history are private to each worker and retained across
-// jobs. resize(), clear() and start() require the pool to be idle.
+// jobs. Reconfiguration and start() require the pool to be idle and must be
+// serialized by the caller. wait() and request_stop() may accompany a search;
+// they must not race destruction or replacement of the pool configuration.
 // The pool owns async cancellation after start(); callers stop a job through
 // request_stop().
 class SearchThreadPool final {
@@ -111,7 +115,8 @@ public:
     SearchThreadPool(
         TranspositionTable& table,
         const nnue::Network& network,
-        std::size_t thread_count = 1
+        std::size_t thread_count = 1,
+        numa::Policy policy = numa::Policy::Auto
     );
     ~SearchThreadPool();
 
@@ -121,6 +126,13 @@ public:
     SearchThreadPool& operator=(SearchThreadPool&&) = delete;
 
     void resize(std::size_t thread_count);
+    void set_numa_policy(numa::Policy policy);
+    [[nodiscard]] numa::Policy numa_policy() const;
+    [[nodiscard]] std::string configuration() const;
+    // Prepare and publish replicas while idle. The caller must then move the
+    // supplied network into the original Network object before the next start.
+    // Failure preserves all current replicas and worker history.
+    void refresh_network(const nnue::Network& network);
     [[nodiscard]] std::size_t size() const;
 
     // Rebuild all worker history while preserving the OS threads and TT.

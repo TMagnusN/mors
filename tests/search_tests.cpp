@@ -120,6 +120,39 @@ bool test_persistent_quiet_history(const nnue::Network& network) {
                   "resizing workers must rebuild their private history");
 }
 
+bool test_numa_reconfiguration(const nnue::Network& network) {
+    TranspositionTable table(2);
+    SearchThreadPool pool(table, network, 2, numa::Policy::None);
+    for (const auto invalid : {std::size_t{0}, MAX_SEARCH_THREADS + 1}) {
+        bool rejected = false;
+        try { pool.resize(invalid); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        if (!expect(rejected && pool.size() == 2, "failed resize must preserve the pool")) return false;
+    }
+    bool rejected_network = false;
+    try { pool.refresh_network(nnue::Network{}); }
+    catch (const std::invalid_argument&) { rejected_network = true; }
+    if (!expect(rejected_network, "invalid network must preserve active replicas")) return false;
+    auto position = Position::from_fen(START_FEN);
+    auto replacement = network.clone();
+    for (const auto policy : {numa::Policy::Auto, numa::Policy::None, numa::Policy::Auto}) {
+        pool.set_numa_policy(policy);
+        pool.refresh_network(replacement);
+        pool.clear();
+        if (!expect(pool.numa_policy() == policy && pool.size() == 2,
+                    "policy changes preserve worker count")) return false;
+        bool completed = false;
+        pool.start(*position, SearchLimits{.max_depth = 3},
+            [&](const SearchResult& result, std::string_view error) {
+                completed = error.empty() && result.completed_depth == 3
+                    && move_is_legal(*position, result.best_move);
+            });
+        pool.wait();
+        if (!expect(completed, "reconfigured workers must search with valid network data")) return false;
+    }
+    return true;
+}
+
 bool test_null_move_round_trip(const nnue::Network& network) {
     auto parsed = Position::from_fen(
         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
@@ -727,7 +760,8 @@ bool run_search_tests() {
         return false;
     }
 
-    const bool passed = test_persistent_quiet_history(*loaded)
+    const bool passed = test_numa_reconfiguration(*loaded)
+                     && test_persistent_quiet_history(*loaded)
                      && test_null_move_round_trip(*loaded)
                      && test_terminal_nodes(*loaded)
                      && test_pvs_and_restoration(*loaded)

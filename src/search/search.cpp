@@ -23,6 +23,8 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <map>
+#include <sstream>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -1547,54 +1549,94 @@ private:
 class SearchThreadPool::Impl final {
 public:
     Impl(
-        TranspositionTable& table,
-        const nnue::Network& network,
-        std::size_t thread_count
-    )
-        : table_(table), network_(network) {
-        resize(thread_count);
+        TranspositionTable& table, const nnue::Network& network,
+        std::size_t thread_count, numa::Policy policy,
+        numa::Topology topology, bool allow_binding = true
+    ) : table_(table), network_(network), topology_(std::move(topology)), policy_(policy),
+        bindings_() {
+        if (thread_count < 1 || thread_count > MAX_SEARCH_THREADS)
+            throw std::invalid_argument("thread count is outside the supported range");
+        bindings_ = numa::plan(topology_, thread_count,
+            allow_binding ? policy : numa::Policy::None, numa::process_rotation());
+        try {
+            start_threads(thread_count);
+            refresh_network(network_);
+        } catch (...) {
+            stop_threads();
+            throw;
+        }
     }
 
     ~Impl() {
+        request_stop();
+        wait();
+        stop_threads();
+    }
+
+    [[nodiscard]] std::unique_ptr<Impl> replacement(std::size_t count, numa::Policy policy) {
+        require_idle();
+        return create(table_, network_, count, policy, topology_);
+    }
+
+    static std::unique_ptr<Impl> create(
+        TranspositionTable& table, const nnue::Network& network,
+        std::size_t count, numa::Policy policy, const numa::Topology& topology
+    ) {
         try {
-            request_stop();
-            wait();
-            stop_threads();
-        } catch (...) {
-            std::terminate();
+            return std::make_unique<Impl>(table, network, count, policy, topology);
+        } catch (const numa::BindingError& error) {
+            auto pool = std::make_unique<Impl>(table, network, count, policy, topology, false);
+            pool->binding_diagnostic_ = error.what();
+            return pool;
         }
     }
 
-    void resize(std::size_t thread_count) {
-        if (thread_count < 1 || thread_count > MAX_SEARCH_THREADS)
-            throw std::invalid_argument("thread count is outside the supported range");
+    void check_idle() const { require_idle(); }
 
-        std::size_t previous_thread_count = 0;
-        {
-            const std::lock_guard lock(mutex_);
-            if (active_)
-                throw std::logic_error("cannot resize the thread pool during search");
-            if (restarting_)
-                throw std::logic_error("thread pool resize is already in progress");
-            if (threads_.size() == thread_count)
-                return;
-            previous_thread_count = threads_.size();
-        }
+    [[nodiscard]] numa::Policy policy() const noexcept { return policy_; }
 
-        try {
-            restart_threads(thread_count);
-        } catch (...) {
-            const std::exception_ptr resize_error = std::current_exception();
-            if (previous_thread_count != 0) {
-                try {
-                    restart_threads(previous_thread_count);
-                } catch (...) {
-                    // Preserve the original resize failure. A second resource
-                    // failure can still leave the pool unavailable.
-                }
+    [[nodiscard]] std::string configuration() const {
+        std::ostringstream output;
+        output << "info string Available processors: " << topology_.describe() << '\n'
+               << "info string NUMA policy: " << (policy_ == numa::Policy::Auto ? "auto" : "none")
+               << (bindings_.empty() ? " (OS scheduling)\n" : " (CPU binding enabled)\n");
+        if (!topology_.diagnostic.empty())
+            output << "info string " << topology_.diagnostic << '\n';
+        if (!binding_diagnostic_.empty())
+            output << "info string NUMA fallback: " << binding_diagnostic_ << '\n';
+        if (replicas_.empty()) {
+            output << "info string Network replicas: 1 shared (OS placement)\n";
+        } else {
+            for (const auto& replica : replicas_) {
+                std::size_t workers = 0;
+                for (const auto& binding : bindings_)
+                    workers += binding.node == replica.node;
+                output << "info string NUMA node " << replica.node << ": " << workers
+                       << " workers, 1 NNUE replica (preferred placement)\n";
             }
-            std::rethrow_exception(resize_error);
         }
+        return output.str();
+    }
+
+    void refresh_network(const nnue::Network& network) {
+        require_idle();
+        if (!network.valid()) throw std::invalid_argument("invalid NNUE network");
+        std::vector<Replica> replacements;
+        std::map<unsigned, std::size_t> leaders;
+        for (std::size_t i = 0; i < bindings_.size(); ++i)
+            leaders.try_emplace(bindings_[i].node, i);
+        for (const auto& [node, leader] : leaders) {
+            (void)leader;
+            replacements.push_back(Replica{node, {}});
+        }
+        if (!replacements.empty()) {
+            run_on_workers([&](std::size_t index) {
+                for (auto& replica : replacements)
+                    if (leaders.at(replica.node) == index)
+                        replica.network = network.clone(replica.node);
+            });
+        }
+        replicas_.swap(replacements);
     }
 
     [[nodiscard]] std::size_t size() const {
@@ -1603,18 +1645,13 @@ public:
     }
 
     void clear() {
-        const std::lock_guard lock(mutex_);
-        if (active_)
-            throw std::logic_error("cannot clear thread data during search");
-        if (restarting_ || shutting_down_)
-            throw std::logic_error("thread pool is not ready");
-
-        // Build all replacements before publishing any so allocation failure
-        // leaves every worker's existing history intact.
-        std::vector<std::unique_ptr<ThreadData>> replacements;
-        replacements.reserve(threads_.size());
-        for (std::size_t index = 0; index < threads_.size(); ++index)
-            replacements.push_back(std::make_unique<ThreadData>());
+        require_idle();
+        // Stage on the owning, bound workers. Publish only after all allocations
+        // succeed; a failed clear keeps every worker's learned history intact.
+        std::vector<std::unique_ptr<ThreadData>> replacements(threads_.size());
+        run_on_workers([&](std::size_t index) {
+            replacements[index] = std::make_unique<ThreadData>();
+        });
         thread_data_.swap(replacements);
     }
 
@@ -1634,7 +1671,7 @@ public:
             const std::lock_guard lock(mutex_);
             if (active_)
                 throw std::logic_error("thread pool already has an active search");
-            if (restarting_ || shutting_down_ || threads_.empty())
+            if (maintenance_ || restarting_ || shutting_down_ || threads_.empty())
                 throw std::logic_error("thread pool is not ready");
 
             const bool initially_stopped =
@@ -1735,56 +1772,42 @@ private:
         return nodes;
     }
 
-    void restart_threads(std::size_t thread_count) {
-        std::vector<std::thread> retiring;
-        {
-            const std::lock_guard lock(mutex_);
-            restarting_ = true;
-            shutting_down_ = true;
-            retiring.swap(threads_);
-        }
+    struct Replica final {
+        unsigned node;
+        nnue::Network network;
+    };
+
+    void require_idle() const {
+        const std::lock_guard lock(mutex_);
+        if (active_ || maintenance_ || restarting_ || shutting_down_)
+            throw std::logic_error("thread pool must be idle for reconfiguration");
+    }
+
+    void run_on_workers(std::function<void(std::size_t)> task) {
+        std::unique_lock lock(mutex_);
+        if (active_ || maintenance_ || restarting_ || shutting_down_)
+            throw std::logic_error("thread pool must be idle for maintenance");
+        if (threads_.empty()) throw std::logic_error("thread pool is empty");
+        maintenance_task_ = std::move(task);
+        maintenance_error_ = nullptr;
+        maintenance_remaining_ = threads_.size();
+        maintenance_ = true;
+        ++job_generation_;
         job_cv_.notify_all();
-        for (std::thread& thread : retiring)
-            if (thread.joinable())
-                thread.join();
+        idle_cv_.wait(lock, [this] { return maintenance_remaining_ == 0; });
+        maintenance_ = false;
+        maintenance_task_ = {};
+        if (maintenance_error_) std::rethrow_exception(maintenance_error_);
+    }
 
-        {
-            const std::lock_guard lock(mutex_);
-            shutting_down_ = false;
-            job_generation_ = 0;
-        }
-
-        std::vector<std::thread> replacements;
-        try {
-            thread_data_.clear();
-            thread_data_.reserve(thread_count);
-            for (std::size_t index = 0; index < thread_count; ++index)
-                thread_data_.push_back(std::make_unique<ThreadData>());
-            replacements.reserve(thread_count);
-            for (std::size_t index = 0; index < thread_count; ++index)
-                replacements.emplace_back(&Impl::worker_loop, this, index);
-        } catch (...) {
-            {
-                const std::lock_guard lock(mutex_);
-                shutting_down_ = true;
-            }
-            job_cv_.notify_all();
-            for (std::thread& thread : replacements)
-                if (thread.joinable())
-                    thread.join();
-            {
-                const std::lock_guard lock(mutex_);
-                shutting_down_ = false;
-                restarting_ = false;
-            }
-            throw;
-        }
-
-        {
-            const std::lock_guard lock(mutex_);
-            threads_ = std::move(replacements);
-            restarting_ = false;
-        }
+    void start_threads(std::size_t thread_count) {
+        thread_data_.resize(thread_count);
+        threads_.reserve(thread_count);
+        for (std::size_t index = 0; index < thread_count; ++index)
+            threads_.emplace_back(&Impl::worker_loop, this, index);
+        std::unique_lock lock(mutex_);
+        idle_cv_.wait(lock, [this, thread_count] { return initialized_workers_ == thread_count; });
+        if (initialization_error_) std::rethrow_exception(initialization_error_);
     }
 
     void stop_threads() {
@@ -1808,6 +1831,21 @@ private:
     }
 
     void worker_loop(std::size_t worker_index) {
+        std::exception_ptr initialization_error;
+        try {
+            if (!bindings_.empty()) numa::bind_current_thread(bindings_[worker_index]);
+            thread_data_[worker_index] = std::make_unique<ThreadData>();
+        } catch (...) {
+            initialization_error = std::current_exception();
+        }
+        {
+            const std::lock_guard lock(mutex_);
+            if (initialization_error && !initialization_error_)
+                initialization_error_ = initialization_error;
+            ++initialized_workers_;
+        }
+        idle_cv_.notify_all();
+        if (initialization_error) return;
         std::uint64_t observed_generation = 0;
 
         while (true) {
@@ -1822,6 +1860,20 @@ private:
                     return;
 
                 observed_generation = job_generation_;
+                if (maintenance_) {
+                    lock.unlock();
+                    std::exception_ptr error;
+                    try {
+                        maintenance_task_(worker_index);
+                    } catch (...) {
+                        error = std::current_exception();
+                    }
+                    lock.lock();
+                    if (error && !maintenance_error_) maintenance_error_ = error;
+                    --maintenance_remaining_;
+                    idle_cv_.notify_all();
+                    continue;
+                }
                 assert(active_);
                 assert(job_.has_value());
                 assert(worker_index < job_->worker_count);
@@ -1869,7 +1921,16 @@ private:
             SearchResult result;
             std::string error;
             try {
-                SearchWorker worker(table_, network_, *thread_data_[worker_index]);
+                const nnue::Network* selected_network = &network_;
+                if (!bindings_.empty()) {
+                    const unsigned node = bindings_[worker_index].node;
+                    for (const auto& replica : replicas_)
+                        if (replica.node == node) {
+                            selected_network = &replica.network;
+                            break;
+                        }
+                }
+                SearchWorker worker(table_, *selected_network, *thread_data_[worker_index]);
                 result = worker.run(
                     job->root,
                     worker_limits,
@@ -1945,6 +2006,17 @@ private:
     std::condition_variable idle_cv_;
     std::vector<std::thread> threads_;
     std::vector<std::unique_ptr<ThreadData>> thread_data_;
+    numa::Topology topology_;
+    numa::Policy policy_;
+    std::vector<numa::Cpu> bindings_;
+    std::vector<Replica> replicas_;
+    std::string binding_diagnostic_;
+    std::size_t initialized_workers_ = 0;
+    std::exception_ptr initialization_error_;
+    std::function<void(std::size_t)> maintenance_task_;
+    std::exception_ptr maintenance_error_;
+    std::size_t maintenance_remaining_ = 0;
+    bool maintenance_ = false;
     std::optional<Job> job_;
     std::atomic_bool stop_requested_{false};
     std::uint64_t job_generation_ = 0;
@@ -1956,14 +2028,31 @@ private:
 SearchThreadPool::SearchThreadPool(
     TranspositionTable& table,
     const nnue::Network& network,
-    std::size_t thread_count
+    std::size_t thread_count,
+    numa::Policy policy
 )
-    : impl_(std::make_unique<Impl>(table, network, thread_count)) {}
+    : impl_(Impl::create(table, network, thread_count, policy, numa::Topology::detect())) {}
 
 SearchThreadPool::~SearchThreadPool() = default;
 
 void SearchThreadPool::resize(std::size_t thread_count) {
-    impl_->resize(thread_count);
+    impl_->check_idle();
+    if (thread_count != impl_->size())
+        impl_ = impl_->replacement(thread_count, impl_->policy());
+}
+
+void SearchThreadPool::set_numa_policy(numa::Policy policy) {
+    impl_->check_idle();
+    if (policy != impl_->policy())
+        impl_ = impl_->replacement(impl_->size(), policy);
+}
+
+numa::Policy SearchThreadPool::numa_policy() const { return impl_->policy(); }
+
+std::string SearchThreadPool::configuration() const { return impl_->configuration(); }
+
+void SearchThreadPool::refresh_network(const nnue::Network& network) {
+    impl_->refresh_network(network);
 }
 
 std::size_t SearchThreadPool::size() const {

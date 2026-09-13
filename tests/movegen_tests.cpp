@@ -367,6 +367,7 @@ bool run_zobrist_tests();
 bool run_score_tests();
 bool run_see_tests();
 bool run_tt_tests();
+bool run_numa_tests();
 bool run_nnue_tests();
 bool run_search_tests();
 bool run_time_tests();
@@ -414,6 +415,7 @@ int main() {
     passed &= run_score_tests();
     passed &= run_see_tests();
     passed &= run_tt_tests();
+    passed &= run_numa_tests();
     passed &= run_nnue_tests();
     passed &= run_search_tests();
     passed &= run_time_tests();

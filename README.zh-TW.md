@@ -147,10 +147,17 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 |---|---|---|
 | `Threads` | 1–22,528；預設 1 | 持久化 Lazy SMP workers，共享 TT，各自保有獨立搜尋狀態；實際建立數量受可用系統資源限制。 |
 | `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 16 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
+| `NumaPolicy` | `auto`／`none`；預設 `auto` | 可用 CPU 跨 NUMA 節點或 processor group 時綁定 workers，並在使用中的節點建立 NNUE 複本；`none` 交由 OS 排程並共用一份網路。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
 | `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |
 | `EvalFile` | 預設使用內建網路 | 載入相容的外部 P2-H32 網路。 |
 | `Move Overhead` | 0–5000 ms；預設 10 ms | 為 GUI、排程及通訊延遲預留時間。 |
+
+`NumaPolicy=auto` 啟用綁定時會優先使用實體核心，再使用 SMT siblings。
+Worker history 在綁定後初始化，NNUE 複本指定偏好的 NUMA 節點；實際頁面位置
+由作業系統決定。單節點且單 group 時保留 OS 排程，`none` 停用綁定及複本。
+共享 TT 仍使用既有配置器。多個引擎同時執行時，請使用外部 CPU affinity 分配
+或 `none`；自動配置不會跨程序保留 CPU。詳見 [NUMA 實作說明](src/platform/README.md)。
 
 ## 倉庫結構
 

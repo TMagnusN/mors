@@ -8,8 +8,12 @@
 #include "eval/nnue/wdl.hpp"
 #include "eval/nnue/worker.hpp"
 #include "search/score.hpp"
+#include "platform/numa.hpp"
 
+#include <algorithm>
 #include <array>
+#include <exception>
+#include <thread>
 #include <bit>
 #include <limits>
 #include <vector>
@@ -389,6 +393,48 @@ bool test_wdl_model() {
 
 } // namespace
 
+bool test_network_clone(const mors::nnue::Network& original) {
+    auto replica = original.clone();
+    const auto identical = [&](const mors::nnue::Network& copy) {
+        const auto equal_buffer = [](auto a, auto b) {
+            return a.data() != b.data() && a.size() == b.size()
+                && std::equal(a.begin(), a.end(), b.begin());
+        };
+        return equal_buffer(original.coarse_weights(), copy.coarse_weights())
+            && equal_buffer(original.coarse_biases(), copy.coarse_biases())
+            && equal_buffer(original.fine_weights(), copy.fine_weights())
+            && equal_buffer(original.fine_biases(), copy.fine_biases())
+            && equal_buffer(original.output_weights(), copy.output_weights())
+            && equal_buffer(original.output_biases(), copy.output_biases())
+            && original.scale() == copy.scale()
+            && original.source() == copy.source()
+            && original.has_fast_output_weights() == copy.has_fast_output_weights();
+    };
+    if (!expect(identical(replica), "clone must deeply copy every weight and metadata")) return false;
+    if (!test_golden(replica)) return false;
+    const auto topology = mors::numa::Topology::detect();
+    if (!topology.cpus.empty()) {
+        std::exception_ptr error;
+        bool skipped = false;
+        std::thread helper([&] {
+            try {
+                mors::numa::bind_current_thread(topology.cpus.front());
+                replica = original.clone(topology.cpus.front().node);
+            } catch (const mors::numa::BindingError& failure) {
+                // Linux containers can deny mbind; the production auto policy
+                // also falls back to OS scheduling for this exact failure.
+                std::cout << "SKIP NUMA node allocation: " << failure.what() << '\n';
+                skipped = true;
+            } catch (...) { error = std::current_exception(); }
+        });
+        helper.join();
+        if (!expect(!error, "node-local clone allocation must succeed")) return false;
+        if (!skipped && (!expect(identical(replica), "node replica must preserve all network data")
+                        || !test_golden(replica))) return false;
+    }
+    return true;
+}
+
 bool run_nnue_tests() {
     const std::filesystem::path path = network_path();
     if (!expect(!path.empty(), "mors-p2h32-s14400M-o3183M-c+frc.mnue must be available"))
@@ -408,7 +454,7 @@ bool run_nnue_tests() {
                         );
     const bool kernels = base && test_output_kernels() && test_output_weight_dispatch()
         && expect(loaded->has_fast_output_weights(), "production network must select narrow SIMD");
-    const bool golden = kernels && test_golden(*loaded);
+    const bool golden = kernels && test_golden(*loaded) && test_network_clone(*loaded);
     const bool incremental = golden && test_incremental_moves(*loaded);
     const bool line = incremental && test_incremental_line(*loaded);
     const bool lazy = line && test_lazy_incremental_line(*loaded);

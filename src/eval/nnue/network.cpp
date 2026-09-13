@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "network.hpp"
+#include "platform/numa.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <limits>
 #include <new>
 #include <streambuf>
+#include <stdexcept>
 #include <utility>
 
 namespace mors::nnue {
@@ -24,26 +26,26 @@ class AlignedI16Buffer final {
 public:
     AlignedI16Buffer() noexcept = default;
 
-    explicit AlignedI16Buffer(std::size_t size)
-        : data_(static_cast<std::int16_t*>(
-              ::operator new[](size * sizeof(std::int16_t), std::align_val_t{ALIGNMENT})
-          )),
-          size_(size) {}
+    explicit AlignedI16Buffer(std::size_t size, std::optional<unsigned> node = std::nullopt)
+        : data_(static_cast<std::int16_t*>(node
+              ? numa::allocate_on_node(size * sizeof(std::int16_t), *node)
+              : ::operator new[](size * sizeof(std::int16_t), std::align_val_t{ALIGNMENT}))),
+          size_(size), node_allocated_(node.has_value()) {}
 
-    ~AlignedI16Buffer() {
-        ::operator delete[](data_, std::align_val_t{ALIGNMENT});
-    }
+    ~AlignedI16Buffer() { release(); }
 
     AlignedI16Buffer(AlignedI16Buffer&& other) noexcept
         : data_(std::exchange(other.data_, nullptr)),
-          size_(std::exchange(other.size_, 0)) {}
+          size_(std::exchange(other.size_, 0)),
+          node_allocated_(std::exchange(other.node_allocated_, false)) {}
 
     AlignedI16Buffer& operator=(AlignedI16Buffer&& other) noexcept {
         if (this == &other)
             return *this;
-        ::operator delete[](data_, std::align_val_t{ALIGNMENT});
+        release();
         data_ = std::exchange(other.data_, nullptr);
         size_ = std::exchange(other.size_, 0);
+        node_allocated_ = std::exchange(other.node_allocated_, false);
         return *this;
     }
 
@@ -59,8 +61,15 @@ public:
     }
 
 private:
+    void release() noexcept {
+        if (node_allocated_)
+            numa::free_on_node(data_, size_ * sizeof(std::int16_t));
+        else
+            ::operator delete[](data_, std::align_val_t{ALIGNMENT});
+    }
     std::int16_t* data_ = nullptr;
     std::size_t size_ = 0;
+    bool node_allocated_ = false;
 };
 
 [[nodiscard]] constexpr std::uint32_t read_u32_le(
@@ -112,12 +121,19 @@ public:
 } // namespace
 
 struct Network::Impl final {
-    AlignedI16Buffer coarse_weights{P2H32::COARSE_WEIGHT_COUNT};
-    AlignedI16Buffer coarse_biases{P2H32::COARSE_BIAS_COUNT};
-    AlignedI16Buffer fine_weights{P2H32::FINE_WEIGHT_COUNT};
-    AlignedI16Buffer fine_biases{P2H32::FINE_BIAS_COUNT};
-    AlignedI16Buffer output_weights{P2H32::OUTPUT_WEIGHT_COUNT};
-    AlignedI16Buffer output_biases{P2H32::OUTPUT_BIAS_COUNT};
+    explicit Impl(std::optional<unsigned> node = std::nullopt)
+        : coarse_weights(P2H32::COARSE_WEIGHT_COUNT, node),
+          coarse_biases(P2H32::COARSE_BIAS_COUNT, node),
+          fine_weights(P2H32::FINE_WEIGHT_COUNT, node),
+          fine_biases(P2H32::FINE_BIAS_COUNT, node),
+          output_weights(P2H32::OUTPUT_WEIGHT_COUNT, node),
+          output_biases(P2H32::OUTPUT_BIAS_COUNT, node) {}
+    AlignedI16Buffer coarse_weights;
+    AlignedI16Buffer coarse_biases;
+    AlignedI16Buffer fine_weights;
+    AlignedI16Buffer fine_biases;
+    AlignedI16Buffer output_weights;
+    AlignedI16Buffer output_biases;
     std::filesystem::path source;
     std::int32_t scale = P2H32::DEFAULT_SCALE;
     bool fast_output_weights = false;
@@ -218,6 +234,25 @@ std::expected<Network, std::string> Network::load(
         }
     );
     return network;
+}
+
+Network Network::clone(std::optional<unsigned> node) const {
+    if (!valid()) throw std::invalid_argument("cannot clone an invalid network");
+    Network replica;
+    replica.impl_ = std::make_unique<Impl>(node);
+    const auto copy = [](const AlignedI16Buffer& from, AlignedI16Buffer& to) {
+        std::copy_n(from.data(), from.size(), to.data());
+    };
+    copy(impl_->coarse_weights, replica.impl_->coarse_weights);
+    copy(impl_->coarse_biases, replica.impl_->coarse_biases);
+    copy(impl_->fine_weights, replica.impl_->fine_weights);
+    copy(impl_->fine_biases, replica.impl_->fine_biases);
+    copy(impl_->output_weights, replica.impl_->output_weights);
+    copy(impl_->output_biases, replica.impl_->output_biases);
+    replica.impl_->source = impl_->source;
+    replica.impl_->scale = impl_->scale;
+    replica.impl_->fast_output_weights = impl_->fast_output_weights;
+    return replica;
 }
 
 bool Network::valid() const noexcept {

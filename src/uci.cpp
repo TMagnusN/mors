@@ -30,7 +30,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -176,6 +175,7 @@ public:
                      << MAX_SEARCH_THREADS << "\n"
                      << "option name Hash type spin default " << DEFAULT_TT_SIZE_MB
                      << " min 1 max " << MAX_TT_SIZE_MB << "\n"
+                     << "option name NumaPolicy type combo default auto var auto var none\n"
                      << "option name Clear Hash type button\n"
                      << "option name UCI_Chess960 type check default false\n"
                      << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
@@ -297,6 +297,13 @@ private:
                            + loaded.error() + "\n");
                 return;
             }
+            try {
+                thread_pool_.refresh_network(*loaded);
+            } catch (const std::exception& error) {
+                emit(output, "info string EvalFile replica preparation failed: "
+                           + std::string(error.what()) + "\n");
+                return;
+            }
             network_ = std::move(*loaded);
             table_.clear();
             emit(output, "info string EvalFile loaded: "
@@ -313,6 +320,21 @@ private:
                 return;
             }
             time_manager_.set_move_overhead_ms(milliseconds);
+            return;
+        }
+
+        if (name == "NumaPolicy") {
+            if (value_text != "auto" && value_text != "none") {
+                emit(output, "info string NumaPolicy must be auto or none\n");
+                return;
+            }
+            try {
+                thread_pool_.set_numa_policy(value_text == "auto"
+                    ? numa::Policy::Auto : numa::Policy::None);
+            } catch (const std::exception& error) {
+                emit(output, "info string NumaPolicy change failed: "
+                           + std::string(error.what()) + "\n");
+            }
             return;
         }
 
@@ -485,9 +507,6 @@ private:
             return;
         }
 
-        const unsigned processor_count = std::thread::hardware_concurrency();
-        const unsigned last_processor =
-            processor_count == 0 ? 0 : processor_count - 1;
         const std::filesystem::path& network_source = network_.source();
         std::string network_name =
             network_source == std::filesystem::path("<internal>")
@@ -500,8 +519,7 @@ private:
         const std::size_t network_mib = network_.memory_bytes() / MEBIBYTE;
         const std::size_t thread_count = thread_pool_.size();
         std::ostringstream configuration;
-        configuration
-            << "info string Available processors: 0-" << last_processor << '\n';
+        configuration << thread_pool_.configuration();
         if (thread_count == 1) {
             configuration << "info string Using 1 thread\n";
         } else {
@@ -516,8 +534,7 @@ private:
             << nnue::P2H32::COARSE_WIDTH << ", "
             << nnue::P2H32::FINE_INPUTS << "->"
             << nnue::P2H32::FINE_WIDTH << ", "
-            << nnue::P2H32::OUTPUT_BUCKETS << "))\n"
-            << "info string Network replica 1: Local memory.\n";
+            << nnue::P2H32::OUTPUT_BUCKETS << "))\n";
         emit(output, configuration.str());
 
         MoveList legal_moves;

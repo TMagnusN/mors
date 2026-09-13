@@ -579,6 +579,17 @@ Main 完成後會發布停止，pool 等全部 helper 回到 idle 才送出 comp
 UCI 與 `SearchThreadPool::resize()` 共用 `MAX_SEARCH_THREADS = 22,528`，
 預設為 1；實際建立數量受作業系統與可用記憶體限制。超限輸入在建立 worker 前拒絕。
 
+`NumaPolicy` 預設為 `auto`。可用 CPU 跨 NUMA node 或 Windows processor group
+時先綁定 worker，再由 worker 初始化私有 history。使用中的 node 各有一份
+唯讀 NNUE 複本；Context 的 accumulator／PV 等仍在 worker 內建立。
+單 node 且單 group 的 auto，以及 none 模式，使用 OS 排程與原始共享 NNUE。
+CPU 與記憶體配置介面位於 [platform](../platform/README.md)。
+
+`clear()` 透過同步 maintenance job 在各 worker 上建立替代 history，全部成功後
+才交換；不重啟 OS threads。改變 Threads／NumaPolicy 時先建立完整的新 pool，
+成功後才退役舊 pool。EvalFile 的所有節點複本先準備完成，才切換來源網路。
+控制操作由呼叫者序列化；搜尋中拒絕重配置。TT 配置與 probe/store 契約不變。
+
 目前檔案責任與後續拆分方向：
 
 - `chess/types.hpp`：底層 `Value`/`Depth` 型別與全域保留數值區間。
