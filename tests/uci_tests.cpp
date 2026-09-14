@@ -124,7 +124,7 @@ bool run_uci_tests() {
         && expect_contains(text, "id name Dragon of MORS 0.2.0-dev\n", "engine id must be emitted")
         && expect_contains(text, "id author Theodore M. A. Øen (USA) & Codex (USA)\n",
                            "author id must be emitted")
-        && expect_contains(text, "option name Hash type spin default 16 min 1 max 8589934592\n",
+        && expect_contains(text, "option name Hash type spin default 256 min 1 max 8589934592\n",
                            "Hash must advertise the 8 PiB limit in MiB")
         && expect(occurrence_count(text,
                        "info string Hash must be between 1 and 8589934592 MiB\n") == 2,

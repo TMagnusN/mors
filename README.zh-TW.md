@@ -166,7 +166,7 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 | 選項 | 範圍／預設值 | 說明 |
 |---|---|---|
 | `Threads` | 1–22,528；預設 1 | 持久化 Lazy SMP workers，共享 TT，各自保有獨立搜尋狀態；實際建立數量受可用系統資源限制。 |
-| `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 16 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
+| `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 256 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
 | `NumaPolicy` | `auto`／`none`；預設 `auto` | 可用 CPU 跨 NUMA 節點或 processor group 時綁定 workers，並在使用中的節點建立 NNUE 複本；`none` 交由 OS 排程並共用一份網路。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
 | `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |

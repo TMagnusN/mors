@@ -167,7 +167,7 @@ For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts bo
 | Option | Range/default | Description |
 |---|---|---|
 | `Threads` | 1–22,528; default 1 | Persistent Lazy SMP workers with a shared TT and private search state; creation depends on available system resources. |
-| `Hash` | 1–8,589,934,592 MiB (8 PiB); default 16 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
+| `Hash` | 1–8,589,934,592 MiB (8 PiB); default 256 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
 | `NumaPolicy` | `auto` / `none`; default `auto` | Bind workers and replicate NNUE on used NUMA nodes when multiple nodes or processor groups are available; `none` uses OS scheduling and one shared network. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
 | `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
