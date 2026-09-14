@@ -27,6 +27,27 @@ The current development version is **Dragon of MORS 0.2.0-dev**. MORS supports s
 - An embedded, provenance-verified default network with optional external network loading through `EvalFile`.
 - Fixed-ISA Windows builds for generic x86-64, AVX2, BMI2, and AVX2+BMI2.
 
+## Syzygy endgame tablebases
+
+MORS supports up to seven pieces through the MIT-licensed [Fathom](vendor/fathom/README.md)
+backend, compiled as **C++23**. Tablebase data files are supplied separately.
+
+```text
+setoption name SyzygyPath value D:\syzygy5
+setoption name SyzygyProbeLimit value 5
+```
+
+`SyzygyProbeLimit` defaults to 7 (0 disables probing); the actual limit also
+respects available files. `SyzygyProbeDepth` defaults to 1 and applies at that
+actual maximum piece count. `Syzygy50MoveRule` defaults to true.
+Windows accepts multiple directories separated by semicolons. Set `SyzygyPath`
+to `<empty>` to unload. Stop an active search before changing options.
+
+The engine ranks root moves using DTZ and uses WDL bounds inside search.
+Castling rights prevent probing, including in Chess960. Missing files fall back
+to normal search. UCI `tbhits` counts successful probes by the main worker.
+See [integration and validation notes](src/syzygy/README.md).
+
 ## Neural Evaluation
 
 MORS uses the **P2-H32** incrementally updated neural architecture:

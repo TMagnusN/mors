@@ -27,6 +27,26 @@
 - 內建且經 provenance 驗證的預設網路，也可透過 `EvalFile` 載入外部網路。
 - 提供 generic x86-64、AVX2、BMI2 與 AVX2+BMI2 四種固定指令集 Windows 建置。
 
+## Syzygy 殘局庫
+
+已整合 MIT 授權的 [Fathom](vendor/fathom/README.md)，原碼以 **C++23** 編譯，
+最多支援七子（含雙方國王）。資料檔須另外準備：
+
+```text
+setoption name SyzygyPath value D:\syzygy5
+setoption name SyzygyProbeLimit value 5
+```
+
+`SyzygyProbeLimit` 預設 7，設為 0 停用；實際上限也受已載入資料限制。
+`SyzygyProbeDepth` 預設 1，只限制實際最大子數的搜尋節點。
+`Syzygy50MoveRule` 預設 true。Windows 多個路徑以分號分隔，
+`SyzygyPath` 設為 `<empty>` 可卸載。修改設定前須先停止搜尋。
+
+根節點以 DTZ 評定候選走法，搜尋內部使用 WDL 結果剪枝；仍有王車易位權時
+不查庫，Chess960 亦同。缺檔時回到正常搜尋；啟用五十步規則時，只有計數為零
+才允許根節點退回純 WDL 查詢。UCI `tbhits` 為主搜尋執行緒的成功查庫次數。
+詳見[整合與驗證說明](src/syzygy/README.md)。
+
 ## 神經網路評估
 
 MORS 使用可增量更新的 **P2-H32** 神經網路架構：

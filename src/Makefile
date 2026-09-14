@@ -42,7 +42,7 @@ ENGINE_ARCH := $(ARCH)
 ENGINE_TARGET := $(BUILD_DIR)/mors-$(ENGINE_ARCH)$(EXE_EXT)
 DATAGEN_TARGET := $(BUILD_DIR)/mors-datagen-$(ENGINE_ARCH)$(EXE_EXT)
 
-CPPFLAGS := -I.
+CPPFLAGS := -I. -I$(PROJECT_ROOT)/vendor/fathom
 
 COMMON_FLAGS := \
     -std=c++23 \
@@ -175,6 +175,7 @@ NETWORK_VERIFICATION_STAMP := $(OBJ_DIR)/resources/mors-network-verified.stamp
 # ---------------------------------------------------------------------------
 
 CORE_SOURCES := \
+    syzygy/syzygy.cpp \
     platform/numa.cpp \
     chess/bitboard.cpp \
     chess/attacks.cpp \
@@ -191,7 +192,8 @@ CORE_SOURCES := \
     search/tt.cpp
 
 CORE_OBJECTS := \
-    $(addprefix $(OBJ_DIR)/,$(CORE_SOURCES:.cpp=.o))
+    $(addprefix $(OBJ_DIR)/,$(CORE_SOURCES:.cpp=.o)) \
+    $(OBJ_DIR)/vendor/fathom.o
 
 PERFT_OBJECT := \
     $(OBJ_DIR)/tools/perft_main.o
@@ -210,6 +212,7 @@ ENGINE_OBJECTS := \
     $(UCI_OBJECT)
 
 TEST_OBJECTS := \
+    $(OBJ_DIR)/tests/syzygy_tests.o \
     $(OBJ_DIR)/tests/numa_tests.o \
     $(OBJ_DIR)/tests/attacks_tests.o \
     $(OBJ_DIR)/tests/zobrist_tests.o \
@@ -371,6 +374,11 @@ $(OBJ_DIR)/%.o: %.cpp
 	mkdir -p "$(@D)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c "$<" -o "$@"
 
+# Upstream C filenames retained; the backend is explicitly compiled as C++23.
+$(OBJ_DIR)/vendor/fathom.o: $(PROJECT_ROOT)/vendor/fathom/tbprobe.c
+	mkdir -p "$(@D)"
+	$(CXX) $(CPPFLAGS) $(filter-out -Wconversion -Wshadow -Wpedantic,$(CXXFLAGS)) -I$(PROJECT_ROOT)/vendor/fathom -DTB_NO_HELPER_API -DTB_NO_HW_POP_COUNT -x c++ -c "$<" -o "$@"
+
 $(OBJ_DIR)/tests/%.o: $(PROJECT_ROOT)/tests/%.cpp
 	mkdir -p "$(@D)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c "$<" -o "$@"
@@ -383,3 +391,9 @@ clean:
 	rm -rf "$(BUILD_ROOT)"
 
 -include $(DEPENDENCIES)
+# Batch probe tool for independent oracle checks.
+.PHONY: syzygy-check
+syzygy-check: $(BUILD_DIR)/mors-syzygy-check$(EXE_EXT)
+$(BUILD_DIR)/mors-syzygy-check$(EXE_EXT): $(CORE_OBJECTS) $(OBJ_DIR)/tools/syzygy_main.o
+	$(CXX) $^ $(LDFLAGS) -o "$@"
+-include $(OBJ_DIR)/tools/syzygy_main.d

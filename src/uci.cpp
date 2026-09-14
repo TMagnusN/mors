@@ -159,6 +159,7 @@ public:
 
     ~UciSession() {
         stop_search();
+        syzygy::shutdown();
     }
 
     [[nodiscard]] bool process(std::string_view line, std::ostream& output) {
@@ -177,6 +178,10 @@ public:
                      << " min 1 max " << MAX_TT_SIZE_MB << "\n"
                      << "option name NumaPolicy type combo default auto var auto var none\n"
                      << "option name Clear Hash type button\n"
+                     << "option name SyzygyPath type string default <empty>\n"
+                     << "option name SyzygyProbeLimit type spin default 7 min 0 max 7\n"
+                     << "option name SyzygyProbeDepth type spin default 1 min 1 max 100\n"
+                     << "option name Syzygy50MoveRule type check default true\n"
                      << "option name UCI_Chess960 type check default false\n"
                      << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
                      << "option name Move Overhead type spin default "
@@ -284,6 +289,36 @@ private:
             }
             chess960_ = value_text == "true";
             position_.set_chess960(chess960_);
+            return;
+        }
+
+        if (name == "SyzygyPath") {
+            const bool loaded = syzygy::init(value_text == "<empty>" ? "" : value_text);
+            table_.clear();
+            emit(output, loaded
+                ? "info string Syzygy available up to " + std::to_string(syzygy::max_pieces()) + " pieces\n"
+                : "info string Syzygy initialization failed\n");
+            return;
+        }
+        if (name == "Syzygy50MoveRule") {
+            if (value_text != "true" && value_text != "false") {
+                emit(output, "info string Syzygy50MoveRule must be true or false\n");
+                return;
+            }
+            syzygy_options_.rule50 = value_text == "true";
+            table_.clear();
+            return;
+        }
+        if (name == "SyzygyProbeLimit" || name == "SyzygyProbeDepth") {
+            int value = 0;
+            const bool is_limit = name == "SyzygyProbeLimit";
+            if (!parse_integer(value_text, value)
+                || value < (is_limit ? 0 : 1) || value > (is_limit ? 7 : 100)) {
+                emit(output, "info string invalid " + name + "\n");
+                return;
+            }
+            (is_limit ? syzygy_options_.probe_limit : syzygy_options_.probe_depth) = value;
+            table_.clear();
             return;
         }
 
@@ -544,6 +579,7 @@ private:
         const auto started = std::chrono::steady_clock::now();
         limits.start_time = started;
         limits.prior_keys = prior_keys_;
+        limits.syzygy = syzygy_options_;
         limits.iteration_callback =
             [this, root, started, output = &output](
                 const SearchResult& iteration
@@ -561,7 +597,9 @@ private:
                     ? iteration.stats.nodes * 1'000 / elapsed_ms
                     : 0;
                 const nnue::WdlTriplet wdl =
-                    nnue::score_to_wdl(iteration.value, root);
+                    iteration.root_in_tb && iteration.value == VALUE_DRAW
+                    ? nnue::WdlTriplet{0, 1'000, 0}
+                    : nnue::score_to_wdl(iteration.value, root);
 
                 std::ostringstream response;
                 response << "info depth "
@@ -572,6 +610,7 @@ private:
                 response << " wdl " << wdl.win << ' '
                          << wdl.draw << ' ' << wdl.loss
                          << " nodes " << iteration.stats.nodes
+                         << " tbhits " << iteration.stats.tb_hits
                          << " nps " << nps
                          << " hashfull " << table_.hashfull()
                          << " time " << elapsed_ms
@@ -633,6 +672,7 @@ private:
     SearchThreadPool thread_pool_;
     std::mutex output_mutex_;
     bool chess960_ = false;
+    syzygy::Options syzygy_options_{};
 };
 
 } // namespace

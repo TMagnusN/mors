@@ -149,6 +149,7 @@ struct Context final {
     std::array<Piece, MAX_PLY> path_pieces{};
     int nmp_min_ply = 0;
     SearchStats stats{};
+    std::optional<syzygy::RootProbe> root_tb;
     bool stopped = false;
     std::chrono::steady_clock::time_point soft_deadline =
         limits.start_time + limits.soft_time;
@@ -362,7 +363,7 @@ private:
 [[nodiscard]] bool is_draw(const Context& context, int ply) noexcept {
     if (ply == 0)
         return false;
-    return context.position.halfmove_clock() >= 100
+    return (context.limits.syzygy.rule50 && context.position.halfmove_clock() >= 100)
         || has_insufficient_material(context.position)
         || is_repetition(context);
 }
@@ -702,6 +703,24 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     if (ply == MAX_PLY)
         return context.evaluator.evaluate(context.position, context.network);
 
+    if (ply == 0 && context.root_tb)
+        moves = context.root_tb->moves;
+
+    // WDL proves bounds, not a mate distance. Excluded-move searches cannot
+    // use the unrestricted position's result.
+    const int tb_limit = syzygy::effective_limit(context.limits.syzygy);
+    if (ply > 0 && !excluded_search && tb_limit > 0
+        && (std::popcount(context.position.pieces()) < tb_limit
+            || depth >= context.limits.syzygy.probe_depth)) {
+        if (const auto wdl = syzygy::probe_wdl(context.position, context.limits.syzygy)) {
+            ++context.stats.tb_hits;
+            const Value tb_value = syzygy::score(*wdl, ply, context.limits.syzygy.rule50);
+            if (tb_value == VALUE_DRAW || (tb_value > 0 && tb_value >= beta)
+                || (tb_value < 0 && tb_value <= alpha))
+                return tb_value;
+        }
+    }
+
     alpha = std::max(alpha, mated_in(ply));
     beta = std::min(beta, mate_in(ply + 1));
     if (alpha >= beta)
@@ -720,7 +739,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             tt_value = value_from_tt(
                 probe.data.value,
                 ply,
-                context.position.halfmove_clock()
+                context.limits.syzygy.rule50 ? context.position.halfmove_clock() : 0
             );
             if (!excluded_search) {
                 tt_move = probe.data.move;
@@ -1206,7 +1225,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
     const Bound bound = best_value >= beta                 ? BOUND_LOWER
                       : best_value <= original_alpha       ? BOUND_UPPER
                                                           : BOUND_EXACT;
-    if (!excluded_search) {
+    if (!excluded_search && !(ply == 0 && context.root_tb)) {
         probe.writer.write({
             .move = best_move,
             .value = value_to_tt(best_value, ply),
@@ -1269,7 +1288,7 @@ void update_pv(Context& context, int ply, Move move) noexcept {
             if (contains_move(moves, probe.data.move))
                 tt_move = probe.data.move;
             const Value tt_value = value_from_tt(
-                probe.data.value, ply, context.position.halfmove_clock());
+                probe.data.value, ply, context.limits.syzygy.rule50 ? context.position.halfmove_clock() : 0);
             const bool bound_ok = probe.data.bound == BOUND_EXACT
                 || (probe.data.bound == BOUND_LOWER && tt_value >= beta)
                 || (probe.data.bound == BOUND_UPPER && tt_value <= alpha);
@@ -1419,15 +1438,34 @@ public:
         );
         SearchResult result;
 
+        // Repetition-sensitive DTZ ranking encourages progress in won endings.
+        bool repeated = false;
+        const std::size_t first = context.keys.size() > position.halfmove_clock() + 1U
+            ? context.keys.size() - position.halfmove_clock() - 1U : 0;
+        for (std::size_t i = first; i < context.keys.size(); ++i)
+            for (std::size_t j = first; j < i; ++j)
+                repeated |= context.keys[i] == context.keys[j];
+        context.root_tb = syzygy::probe_root(position, limits.syzygy, repeated);
+        if (context.root_tb) {
+            result.root_in_tb = true;
+            ++context.stats.tb_hits;
+            // Preserve a proven legal fallback even if stopped before depth 1.
+            result.best_move = context.root_tb->moves[0];
+            result.value = syzygy::score(context.root_tb->wdl, 0, limits.syzygy.rule50);
+            result.principal_variation[0] = result.best_move;
+            result.pv_length = 1;
+        }
+
+        Value previous_search_value = VALUE_NONE;
         for (Depth depth = 1; depth <= limits.max_depth; ++depth) {
             Value alpha = -VALUE_INFINITE;
             Value beta = VALUE_INFINITE;
             Value delta = INITIAL_ASPIRATION_DELTA
                 + static_cast<Value>(worker_index % 8);
 
-            if (depth > 1 && result.value != VALUE_NONE) {
-                alpha = std::max(-VALUE_INFINITE, result.value - delta);
-                beta = std::min(VALUE_INFINITE, result.value + delta);
+            if (depth > 1 && previous_search_value != VALUE_NONE) {
+                alpha = std::max(-VALUE_INFINITE, previous_search_value - delta);
+                beta = std::min(VALUE_INFINITE, previous_search_value + delta);
             }
 
             Value value = VALUE_NONE;
@@ -1456,7 +1494,10 @@ public:
             if (value == VALUE_NONE)
                 break;
 
+            previous_search_value = value;
             result.value = value;
+            if (context.root_tb && !is_mate_value(value))
+                result.value = syzygy::score(context.root_tb->wdl, 0, limits.syzygy.rule50);
             result.completed_depth = depth;
             result.pv_length = context.pv->lengths[0];
             assert(result.pv_length <= result.principal_variation.size());

@@ -6,6 +6,7 @@
 
 #include "chess/move.hpp"
 #include "platform/numa.hpp"
+#include "syzygy/syzygy.hpp"
 
 #include <atomic>
 #include <array>
@@ -50,12 +51,15 @@ struct SearchLimits final {
     // qsearch SEE and history learning remain enabled in both cases.
     bool use_see_pruning = true;
 
+    syzygy::Options syzygy{};
+
     // Called synchronously after each fully completed iterative-deepening
     // depth. An interrupted partial iteration is never reported.
     std::function<void(const SearchResult&)> iteration_callback{};
 };
 
 struct SearchStats final {
+    std::uint64_t tb_hits = 0;
     std::uint64_t nodes = 0;
     std::uint64_t qnodes = 0;
     std::uint64_t pvs_researches = 0;
@@ -90,6 +94,7 @@ struct SearchResult final {
     Value value = VALUE_NONE;
     Depth completed_depth = 0;
     bool stopped = false;
+    bool root_in_tb = false;
     SearchStats stats{};
 
     std::array<Move, MAX_PLY> principal_variation{};
