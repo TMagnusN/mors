@@ -170,7 +170,7 @@ public:
 
         if (command == "uci") {
             std::ostringstream response;
-            response << "id name Dragon of MORS 0.2.0-dev\n"
+            response << "id name Dragon of MORS 0.2.0\n"
                      << "id author Theodore M. A. Øen (USA) & Codex (USA)\n"
                      << "option name Threads type spin default 1 min 1 max "
                      << MAX_SEARCH_THREADS << "\n"
@@ -678,7 +678,7 @@ private:
 } // namespace
 
 int run_uci(std::istream& input, std::ostream& output) {
-    output << "Dragon of MORS 0.2.0-dev by Theodore M. A. Øen (USA) & Codex (USA) "
+    output << "Dragon of MORS 0.2.0 by Theodore M. A. Øen (USA) & Codex (USA) "
               "(see AUTHORS file)\n";
 
     initialize_attacks();

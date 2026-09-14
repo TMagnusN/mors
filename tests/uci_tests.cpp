@@ -118,10 +118,10 @@ bool run_uci_tests() {
     const bool passed =
            expect_contains(
                text,
-               "Dragon of MORS 0.2.0-dev by Theodore M. A. Øen (USA) & Codex (USA) (see AUTHORS file)\n",
+               "Dragon of MORS 0.2.0 by Theodore M. A. Øen (USA) & Codex (USA) (see AUTHORS file)\n",
                "startup banner must credit both authors"
            )
-        && expect_contains(text, "id name Dragon of MORS 0.2.0-dev\n", "engine id must be emitted")
+        && expect_contains(text, "id name Dragon of MORS 0.2.0\n", "engine id must be emitted")
         && expect_contains(text, "id author Theodore M. A. Øen (USA) & Codex (USA)\n",
                            "author id must be emitted")
         && expect_contains(text, "option name Hash type spin default 256 min 1 max 8589934592\n",

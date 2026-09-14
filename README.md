@@ -13,7 +13,19 @@
 
 **MORS** is an independent, actively developed chess engine written in C++23 by [Theodore Magnus Øen & Codex](AUTHORS). It communicates through the [Universal Chess Interface][uci-link], so it can run in a terminal or inside a UCI-compatible chess GUI.
 
-The current development version is **Dragon of MORS 0.2.0-dev**. MORS supports standard chess and Chess960, with persistent Lazy SMP search workers and a configurable 1–22,528 thread count (default: 1).
+The current stable release is **Dragon of MORS 0.2.0**. MORS supports standard chess and Chess960, with persistent Lazy SMP search workers and a configurable 1–22,528 thread count (default: 1).
+
+## 0.2.0 match result
+
+User-reported interim result from the Dragon of MORS Gauntlet:
+
+| Engine | Points | Score | Elo difference | W–L–D |
+|---|---:|---:|---:|---:|
+| Dragon of MORS 0.2.0 64-bit | 680.0 / 1052 | 64.6% | +104.8 ±14.6 | 410–102–540 |
+| MORS 0.1.0 64-bit | 372.0 / 1052 | 35.4% | Baseline | 102–410–540 |
+
+Completed: **1,052 of 5,000 games**, with 51% draws. Time control: **120+1**.
+Opening book: `UHO_4060_v4.epd`. This is an interim result, not a completed match.
 
 ## Highlights
 
