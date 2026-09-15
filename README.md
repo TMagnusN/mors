@@ -15,17 +15,60 @@
 
 The current stable release is **Dragon of MORS 0.2.0**. MORS supports standard chess and Chess960, with persistent Lazy SMP search workers and a configurable 1–22,528 thread count (default: 1).
 
-## 0.2.0 match result
+## Rating
 
-User-reported interim result from the Dragon of MORS Gauntlet:
+| Version | MLTC relative Elo | MSTC relative Elo | CCRL 40/15 |
+|---|---:|---:|---:|
+| Dragon of MORS 0.2.0 64-bit |  | | |
+| MORS 0.1.0 64-bit | 0 (baseline) | | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
-| Engine | Points | Score | Elo difference | W–L–D |
-|---|---:|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit | 680.0 / 1052 | 64.6% | +104.8 ±14.6 | 410–102–540 |
-| MORS 0.1.0 64-bit | 372.0 / 1052 | 35.4% | Baseline | 102–410–540 |
+### Local test definitions
 
-Completed: **1,052 of 5,000 games**, with 51% draws. Time control: **120+1**.
-Opening book: `UHO_4060_v4.epd`. This is an interim result, not a completed match.
+| Test | Time control | Hash / cache |
+|---|---|---:|
+| **MLTC** | **120+1** — 120 seconds per game + 1 second per move | **256 MB** (`Hash=256`) |
+| **MSTC** | **5+0.05** — 5 seconds per game + 0.05 seconds per move | **8 MB** (`Hash=8`) |
+
+> [!NOTE]
+> Cache here means the engine's UCI `Hash` setting (transposition-table memory), not the CPU cache.
+
+> [!IMPORTANT]
+> MLTC and MSTC report relative Elo within their respective local test environments, using 0.1.0 as the baseline. CCRL 40/15 is a separate third-party rating: local Elo differences must not be added to it or used to estimate 0.2.0's CCRL rating. Blank cells indicate results not listed here.
+
+> [!NOTE]
+> **Third-party reference:** the CCRL 40/15 value for 0.1.0 is the user-provided rating snapshot linked above. The CCRL field for 0.2.0 is intentionally left blank.
+
+## Quick start
+
+MORS accepts UCI commands. To use a graphical board, add the compiled `.exe` as an engine in a UCI-compatible chess GUI. The default neural network is embedded.
+
+In an MSYS2 UCRT64 shell with the [build requirements](#requirements) installed:
+
+```bash
+git clone https://github.com/TMagnusN/mors.git
+cd mors
+make -C src -j$(nproc) CONFIG=release ARCH=generic
+./build/release-generic/Dragon-of-MORS-generic.exe
+```
+
+> [!IMPORTANT]
+> Choose a build that matches your CPU. The `generic` build targets baseline x86-64 CPUs; `avx2+bmi2` requires both AVX2 and BMI2. See [architecture variants](#architecture-variants).
+
+After launch, enter these commands in order. Wait for `uciok` before sending `isready`, then wait for `readyok` before setting the position and starting the search:
+
+```text
+uci
+isready
+position startpos
+go movetime 1000
+```
+
+> [!IMPORTANT]
+> Wait for `bestmove`, then enter `quit` to exit. To end a search early, send `stop` and wait for `bestmove`.
+
+## Contents
+
+[Rating](#rating) · [Highlights](#highlights) · [Usage and options](#using-mors) · [Syzygy](#syzygy-endgame-tablebases) · [Neural evaluation](#neural-evaluation) · [Building](#building) · [Testing](#testing) · [Project layout](#project-layout)
 
 ## Highlights
 
@@ -53,7 +96,10 @@ setoption name SyzygyProbeLimit value 5
 respects available files. `SyzygyProbeDepth` defaults to 1 and applies at that
 actual maximum piece count. `Syzygy50MoveRule` defaults to true.
 Windows accepts multiple directories separated by semicolons. Set `SyzygyPath`
-to `<empty>` to unload. Stop an active search before changing options.
+to `<empty>` to unload.
+
+> [!IMPORTANT]
+> Tablebase files must be supplied separately. Stop an active search and wait for `bestmove` before changing Syzygy settings.
 
 The engine ranks root moves using DTZ and uses WDL bounds inside search.
 Castling rights prevent probing, including in Chess960. Missing files fall back
@@ -97,11 +143,11 @@ MORS currently has a Windows-oriented GNU Make build. The recommended environmen
 Clone the repository and enter it:
 
 ```bash
-git clone git@github.com:TMagnusN/mors.git
+git clone https://github.com/TMagnusN/mors.git
 cd mors
 ```
 
-Build the recommended AVX2+BMI2 release:
+If your CPU supports both AVX2 and BMI2, build the corresponding release:
 
 ```bash
 make -C src -j$(nproc) CONFIG=release ARCH=avx2+bmi2
@@ -110,7 +156,7 @@ make -C src -j$(nproc) CONFIG=release ARCH=avx2+bmi2
 The engine will be written to:
 
 ```text
-build/release-avx2+bmi2/mors-avx2+bmi2.exe
+build/release-avx2+bmi2/Dragon-of-MORS-avx2+bmi2.exe
 ```
 
 Release builds use `-O3`, LTO by default, section garbage collection, and static GCC/MinGW C++ runtimes. The default NNUE and Windows icon are embedded into the executable.
@@ -154,21 +200,7 @@ The search-distillation generator is documented in [`tools/DATAGEN.md`](tools/DA
 
 ## Using MORS
 
-Start the engine directly:
-
-```bash
-./build/release-avx2+bmi2/mors-avx2+bmi2.exe
-```
-
-Minimal UCI session:
-
-```text
-uci
-isready
-position startpos
-go movetime 1000
-quit
-```
+Configure the options below through your GUI or with `setoption name <option> value <value>` in a terminal. Stop an active search before changing settings. For a first session, see [Quick start](#quick-start).
 
 MORS accepts standard six-field FEN and the common four- or five-field forms with omitted move counters. A `position fen ... moves ...` command is parsed up to the `moves` separator, matching normal UCI GUI behavior.
 
@@ -182,6 +214,10 @@ For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts bo
 | `Hash` | 1–8,589,934,592 MiB (8 PiB); default 256 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
 | `NumaPolicy` | `auto` / `none`; default `auto` | Bind workers and replicate NNUE on used NUMA nodes when multiple nodes or processor groups are available; `none` uses OS scheduling and one shared network. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
+| `SyzygyPath` | Default `<empty>` | Tablebase directories; separate Windows paths with semicolons. `<empty>` unloads them. |
+| `SyzygyProbeLimit` | 0–7; default 7 | Maximum piece count including both kings; 0 disables probing. |
+| `SyzygyProbeDepth` | 1–100; default 1 | Minimum search depth for probing at the actual maximum piece count. |
+| `Syzygy50MoveRule` | Default `true` | Respect the fifty-move rule when probing. |
 | `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
 | `EvalFile` | Embedded network by default | Loads a compatible external P2-H32 network. |
 | `Move Overhead` | 0–5000 ms; default 10 ms | Reserves time for GUI, scheduling, and communication delay. |
@@ -209,12 +245,7 @@ placement does not reserve CPUs across processes. See [NUMA details](src/platfor
 
 MORS is experimental software under active development. Search techniques and neural networks are promoted only after correctness checks and controlled engine matches, but short-time-control results are not a universal rating and should not be treated as one.
 
-The current scope intentionally excludes:
-
-- Syzygy tablebases;
-- opening-book play inside the engine.
-
-These may be added later, but the README documents only functionality that exists in the current tree.
+Opening-book move selection is not currently built into the engine.
 
 ## Acknowledgements
 
@@ -226,7 +257,7 @@ MORS is independently implemented, but its development benefits from studying st
 - [bullet][bullet-link] and the BulletFormat ecosystem, for neural-network training and data tooling.
 - [fastchess][fastchess-link] and UHO opening suites, for reproducible engine matches.
 
-Acknowledgement does not imply that MORS copies source code from these projects. MORS keeps its own data structures, network format integration, search semantics, tests, and tuning decisions.
+MORS keeps its own data structures, network format integration, search semantics, tests, and tuning decisions. The Syzygy backend uses [Fathom](vendor/fathom/README.md), with its upstream sources and [MIT license](vendor/fathom/LICENSE) preserved.
 
 ## License
 

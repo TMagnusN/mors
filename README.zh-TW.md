@@ -15,17 +15,60 @@
 
 目前的正式版本為 **Dragon of MORS 0.2.0**。MORS 支援標準西洋棋與 Chess960，使用持久化 Lazy SMP 搜尋執行緒，可設定 1–22,528 執行緒，預設為 1。
 
-## 0.2.0 對弈成績
+## Rating
 
-使用者提供的 Dragon of MORS Gauntlet 階段結果：
+| 版本 | MLTC 相對 Elo | MSTC 相對 Elo | CCRL 40/15 |
+|---|---:|---:|---:|
+| Dragon of MORS 0.2.0 64-bit |  | | |
+| MORS 0.1.0 64-bit | 0（基準） | | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
-| 引擎 | 積分 | 得分率 | Elo 差 | 勝–負–和 |
-|---|---:|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit | 680.0 / 1052 | 64.6% | +104.8 ±14.6 | 410–102–540 |
-| MORS 0.1.0 64-bit | 372.0 / 1052 | 35.4% | 基準 | 102–410–540 |
+### 本地測試定義
 
-已完成 **1,052／5,000 局**，和棋率 51%。時限：**120+1**。
-開局庫：`UHO_4060_v4.epd`。這是階段結果，尚非完整賽事結果。
+| 測試 | 時限 | Hash／快取 |
+|---|---|---:|
+| **MLTC** | **120+1**：每局 120 秒，每步增加 1 秒 | **256 MB**（`Hash=256`） |
+| **MSTC** | **5+0.05**：每局 5 秒，每步增加 0.05 秒 | **8 MB**（`Hash=8`） |
+
+> [!NOTE]
+> 此處的快取指引擎 UCI `Hash` 設定所配置的置換表記憶體，不是 CPU 快取。
+
+> [!IMPORTANT]
+> MLTC 與 MSTC 分別記錄各自本地測試環境中的相對 Elo，以 0.1.0 為基準。CCRL 40/15 是獨立的第三方評分，不能加上本地 Elo 差值，也不能據此推算 0.2.0 的 CCRL 評分。空白欄位表示此處尚未列出結果。
+
+> [!NOTE]
+> **第三方參考：**0.1.0 的 CCRL 40/15 數值採用使用者提供的評分快照，來源連結如上。0.2.0 的 CCRL 欄位刻意留空。
+
+## 快速開始
+
+MORS 透過 UCI 接收指令。如需圖形棋盤，請在支援 UCI 的西洋棋 GUI 中新增引擎，選取編譯好的 `.exe`。預設神經網路已內建。
+
+在已備妥[編譯環境](#環境需求)的 MSYS2 UCRT64 shell 中執行：
+
+```bash
+git clone https://github.com/TMagnusN/mors.git
+cd mors
+make -C src -j$(nproc) CONFIG=release ARCH=generic
+./build/release-generic/Dragon-of-MORS-generic.exe
+```
+
+> [!IMPORTANT]
+> 請選擇符合 CPU 指令集的版本。`generic` 適用於基本 x86-64 CPU；`avx2+bmi2` 需要同時支援 AVX2 與 BMI2。詳見[指令集版本](#指令集版本)。
+
+啟動後依序輸入以下指令。收到 `uciok` 後輸入 `isready`，收到 `readyok` 後再設定局面並開始搜尋：
+
+```text
+uci
+isready
+position startpos
+go movetime 1000
+```
+
+> [!IMPORTANT]
+> 等待引擎回傳 `bestmove` 後，再輸入 `quit` 結束。若要提早停止搜尋，輸入 `stop` 並等待 `bestmove`。
+
+## 導覽
+
+[Rating](#rating) · [主要功能](#主要功能) · [使用與設定](#使用-mors) · [Syzygy](#syzygy-殘局庫) · [神經網路](#神經網路評估) · [編譯](#編譯) · [測試](#測試) · [倉庫結構](#倉庫結構)
 
 ## 主要功能
 
@@ -52,7 +95,10 @@ setoption name SyzygyProbeLimit value 5
 `SyzygyProbeLimit` 預設 7，設為 0 停用；實際上限也受已載入資料限制。
 `SyzygyProbeDepth` 預設 1，只限制實際最大子數的搜尋節點。
 `Syzygy50MoveRule` 預設 true。Windows 多個路徑以分號分隔，
-`SyzygyPath` 設為 `<empty>` 可卸載。修改設定前須先停止搜尋。
+`SyzygyPath` 設為 `<empty>` 可卸載。
+
+> [!IMPORTANT]
+> 殘局庫資料檔須另外準備。修改 Syzygy 設定前，請先停止搜尋並等待 `bestmove`。
 
 根節點以 DTZ 評定候選走法，搜尋內部使用 WDL 結果剪枝；仍有王車易位權時
 不查庫，Chess960 亦同。缺檔時回到正常搜尋；啟用五十步規則時，只有計數為零
@@ -96,11 +142,11 @@ MORS 目前使用以 Windows 為主的 GNU Make 建置流程。建議在 **MSYS2
 Clone 倉庫並進入目錄：
 
 ```bash
-git clone git@github.com:TMagnusN/mors.git
+git clone https://github.com/TMagnusN/mors.git
 cd mors
 ```
 
-編譯建議使用的 AVX2+BMI2 release：
+若 CPU 同時支援 AVX2 與 BMI2，可編譯對應的 release：
 
 ```bash
 make -C src -j$(nproc) CONFIG=release ARCH=avx2+bmi2
@@ -109,7 +155,7 @@ make -C src -j$(nproc) CONFIG=release ARCH=avx2+bmi2
 引擎會輸出到：
 
 ```text
-build/release-avx2+bmi2/mors-avx2+bmi2.exe
+build/release-avx2+bmi2/Dragon-of-MORS-avx2+bmi2.exe
 ```
 
 Release 預設使用 `-O3`、LTO、section garbage collection，並靜態連結 GCC／MinGW C++ runtime。預設 NNUE 與 Windows icon 也會嵌入 executable。
@@ -153,21 +199,7 @@ Search-distillation generator 的完整說明位於 [`tools/DATAGEN.md`](tools/D
 
 ## 使用 MORS
 
-直接啟動引擎：
-
-```bash
-./build/release-avx2+bmi2/mors-avx2+bmi2.exe
-```
-
-最小 UCI session：
-
-```text
-uci
-isready
-position startpos
-go movetime 1000
-quit
-```
+可透過 GUI 設定下列選項，或在終端機中使用 `setoption name <選項> value <值>`。修改設定前先停止搜尋；初次操作請見[快速開始](#快速開始)。
 
 MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或五欄形式。`position fen ... moves ...` 會解析到 `moves` 分隔符為止，以符合一般 UCI GUI 的行為。
 
@@ -181,6 +213,10 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 | `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 256 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
 | `NumaPolicy` | `auto`／`none`；預設 `auto` | 可用 CPU 跨 NUMA 節點或 processor group 時綁定 workers，並在使用中的節點建立 NNUE 複本；`none` 交由 OS 排程並共用一份網路。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
+| `SyzygyPath` | 預設 `<empty>` | 殘局庫目錄；Windows 多個路徑以分號分隔，`<empty>` 卸載。 |
+| `SyzygyProbeLimit` | 0–7；預設 7 | 查庫子數上限（含雙方國王）；0 停用。 |
+| `SyzygyProbeDepth` | 1–100；預設 1 | 實際最大子數局面的最低查庫搜尋深度。 |
+| `Syzygy50MoveRule` | 預設 `true` | 查庫時遵守五十步規則。 |
 | `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |
 | `EvalFile` | 預設使用內建網路 | 載入相容的外部 P2-H32 網路。 |
 | `Move Overhead` | 0–5000 ms；預設 10 ms | 為 GUI、排程及通訊延遲預留時間。 |
@@ -207,12 +243,7 @@ Worker history 在綁定後初始化，NNUE 複本指定偏好的 NUMA 節點；
 
 MORS 是持續開發中的實驗性軟體。搜尋技術與神經網路必須先通過正確性檢查及受控引擎對局才會晉升；但短時限測試結果不是通用 rating，不應被當成絕對棋力數字。
 
-目前刻意不包含：
-
-- Syzygy tablebases；
-- 引擎內部 opening-book play。
-
-未來可能加入這些功能，但 README 只記錄目前倉庫已存在的能力。
+目前未內建開局庫走法選擇功能。
 
 ## 致謝
 
@@ -224,7 +255,7 @@ MORS 為獨立實作，但開發過程受益於研究開源引擎與工具：
 - [bullet][bullet-link] 與 BulletFormat 生態：神經網路訓練及資料工具。
 - [fastchess][fastchess-link] 與 UHO opening suites：可重現的引擎對局測試。
 
-致謝不代表 MORS 複製上述專案的原始碼。MORS 維持自己的資料結構、網路格式整合、搜尋語義、測試與調參決策。
+MORS 維持自己的資料結構、網路格式整合、搜尋語義、測試與調參決策。Syzygy 查詢後端採用 [Fathom](vendor/fathom/README.md)，保留其上游原始碼及 [MIT 授權](vendor/fathom/LICENSE)。
 
 ## 授權
 
