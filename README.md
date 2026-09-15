@@ -17,26 +17,28 @@ The current stable release is **Dragon of MORS 0.2.0**. MORS supports standard c
 
 ## Rating
 
-| Version | MLTC relative Elo | MSTC relative Elo | CCRL 40/15 |
-|---|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit |  | | |
-| MORS 0.1.0 64-bit | 0 (baseline) | | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
+| Version | MLTC relative Elo | MSTC relative Elo | MDFRC relative Elo | CCRL 40/15 |
+|---|---:|---:|---:|---:|
+| Dragon of MORS 0.2.0 64-bit | | | | |
+| MORS 0.1.0 64-bit | 0 | 0 | 0 | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
 ### Local test definitions
 
-| Test | Time control | Hash / cache |
-|---|---|---:|
-| **MLTC** | **120+1** — 120 seconds per game + 1 second per move | **256 MB** (`Hash=256`) |
-| **MSTC** | **5+0.05** — 5 seconds per game + 0.05 seconds per move | **8 MB** (`Hash=8`) |
+| Test | Time control | Hash | Games |
+|---|---|---:|---:|
+| **MLTC** | 120+1 | 256 MB | 1,500 |
+| **MSTC** | 5+0.05 | 8 MB | 8,000 |
+| **MDFRC (Double FRC)** | 10+0.1 | 16 MB | 1,500 |
+
+All tests use one thread per engine and paired openings with colors reversed. Time controls are in seconds: initial time + increment per move.
+
+| Test | Opening suite |
+|---|---|
+| MLTC / MSTC | `UHO_4060_v4.epd` |
+| MDFRC | `DFRC_4852_v1.epd` — Double Fischer Random Chess, with Chess960 mode enabled |
 
 > [!NOTE]
-> Cache here means the engine's UCI `Hash` setting (transposition-table memory), not the CPU cache.
-
-> [!IMPORTANT]
-> MLTC and MSTC report relative Elo within their respective local test environments, using 0.1.0 as the baseline. CCRL 40/15 is a separate third-party rating: local Elo differences must not be added to it or used to estimate 0.2.0's CCRL rating. Blank cells indicate results not listed here.
-
-> [!NOTE]
-> **Third-party reference:** the CCRL 40/15 value for 0.1.0 is the user-provided rating snapshot linked above. The CCRL field for 0.2.0 is intentionally left blank.
+> Hash is the transposition-table memory allocated per engine.
 
 ## Quick start
 

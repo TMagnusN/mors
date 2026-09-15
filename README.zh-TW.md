@@ -17,26 +17,28 @@
 
 ## Rating
 
-| 版本 | MLTC 相對 Elo | MSTC 相對 Elo | CCRL 40/15 |
-|---|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit |  | | |
-| MORS 0.1.0 64-bit | 0（基準） | | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
+| 版本 | MLTC 相對 Elo | MSTC 相對 Elo | MDFRC 相對 Elo | CCRL 40/15 |
+|---|---:|---:|---:|---:|
+| Dragon of MORS 0.2.0 64-bit | | | | |
+| MORS 0.1.0 64-bit | 0 | 0 | 0 | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
 ### 本地測試定義
 
-| 測試 | 時限 | Hash／快取 |
-|---|---|---:|
-| **MLTC** | **120+1**：每局 120 秒，每步增加 1 秒 | **256 MB**（`Hash=256`） |
-| **MSTC** | **5+0.05**：每局 5 秒，每步增加 0.05 秒 | **8 MB**（`Hash=8`） |
+| 測試 | 時限 | Hash | 局數 |
+|---|---|---:|---:|
+| **MLTC** | 120+1 | 256 MB | 1,500 |
+| **MSTC** | 5+0.05 | 8 MB | 8,000 |
+| **MDFRC（Double FRC）** | 10+0.1 | 16 MB | 1,500 |
+
+所有測試皆為每個引擎一個執行緒，同一開局交換先後手配對。時限單位為秒：初始時間＋每步增益。
+
+| 測試 | 開局庫 |
+|---|---|
+| MLTC / MSTC | `UHO_4060_v4.epd` |
+| MDFRC | `DFRC_4852_v1.epd` — Double Fischer Random Chess，啟用 Chess960 模式 |
 
 > [!NOTE]
-> 此處的快取指引擎 UCI `Hash` 設定所配置的置換表記憶體，不是 CPU 快取。
-
-> [!IMPORTANT]
-> MLTC 與 MSTC 分別記錄各自本地測試環境中的相對 Elo，以 0.1.0 為基準。CCRL 40/15 是獨立的第三方評分，不能加上本地 Elo 差值，也不能據此推算 0.2.0 的 CCRL 評分。空白欄位表示此處尚未列出結果。
-
-> [!NOTE]
-> **第三方參考：**0.1.0 的 CCRL 40/15 數值採用使用者提供的評分快照，來源連結如上。0.2.0 的 CCRL 欄位刻意留空。
+> Hash 為每個引擎配置的置換表記憶體。
 
 ## 快速開始
 
