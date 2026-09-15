@@ -19,16 +19,16 @@ The current stable release is **Dragon of MORS 0.2.0**. MORS supports standard c
 
 | Version | MLTC relative Elo | MSTC relative Elo | MDFRC relative Elo | CCRL 40/15 |
 |---|---:|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit | | | | |
+| Dragon of MORS 0.2.0 64-bit | +109.28 ±16.23 (440 games) | +136.88 ±7.23 (3,538 games) | +152.86 ±17.98 (822 games) | |
 | MORS 0.1.0 64-bit | 0 | 0 | 0 | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
 ### Local test definitions
 
-| Test | Time control | Hash | Games |
+| Test | Time control | Hash | Typical sample (games) |
 |---|---|---:|---:|
-| **MLTC** | 120+1 | 256 MB | 1,500 |
-| **MSTC** | 5+0.05 | 8 MB | 8,000 |
-| **MDFRC (Double FRC)** | 10+0.1 | 16 MB | 1,500 |
+| **MLTC** | 120+1 | 256 MB | 800–1,500 |
+| **MSTC** | 5+0.05 | 8 MB | 3,000–8,000 |
+| **MDFRC (Double FRC)** | 10+0.1 | 16 MB | 800–1,500 |
 
 All tests use one thread per engine and paired openings with colors reversed. Time controls are in seconds: initial time + increment per move.
 

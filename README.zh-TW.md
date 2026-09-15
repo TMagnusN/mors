@@ -19,16 +19,16 @@
 
 | 版本 | MLTC 相對 Elo | MSTC 相對 Elo | MDFRC 相對 Elo | CCRL 40/15 |
 |---|---:|---:|---:|---:|
-| Dragon of MORS 0.2.0 64-bit | | | | |
+| Dragon of MORS 0.2.0 64-bit | +109.28 ±16.23（440 局） | +136.88 ±7.23（3,538 局） | +152.86 ±17.98（822 局） | |
 | MORS 0.1.0 64-bit | 0 | 0 | 0 | [3464 ±51](https://computerchess.org.uk/4040/cgi/engine_details.cgi?match_length=30&print=Details&each_game=0&eng=MORS%200.1.0%2064-bit#MORS_0_1_0_64-bit) |
 
 ### 本地測試定義
 
-| 測試 | 時限 | Hash | 局數 |
+| 測試 | 時限 | Hash | 通常樣本數（局） |
 |---|---|---:|---:|
-| **MLTC** | 120+1 | 256 MB | 1,500 |
-| **MSTC** | 5+0.05 | 8 MB | 8,000 |
-| **MDFRC（Double FRC）** | 10+0.1 | 16 MB | 1,500 |
+| **MLTC** | 120+1 | 256 MB | 800–1,500 |
+| **MSTC** | 5+0.05 | 8 MB | 3,000–8,000 |
+| **MDFRC（Double FRC）** | 10+0.1 | 16 MB | 800–1,500 |
 
 所有測試皆為每個引擎一個執行緒，同一開局交換先後手配對。時限單位為秒：初始時間＋每步增益。
 
