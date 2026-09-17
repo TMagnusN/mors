@@ -199,6 +199,55 @@ template<typename Integer>
     return std::move(*parsed);
 }
 
+[[nodiscard]] char piece_character(Piece piece) noexcept {
+    constexpr std::array<char, PIECE_NB> PIECE_CHARACTERS{
+        ' ', 'P', 'N', 'B', 'R', 'Q', 'K', ' ',
+        ' ', 'p', 'n', 'b', 'r', 'q', 'k', ' '
+    };
+    return PIECE_CHARACTERS[static_cast<std::size_t>(piece)];
+}
+
+[[nodiscard]] std::string square_name(Square square) {
+    std::string result;
+    result += char('a' + file_of(square));
+    result += char('1' + rank_of(square));
+    return result;
+}
+
+[[nodiscard]] std::string position_display(const Position& position) {
+    constexpr std::string_view BORDER =
+        " +---+---+---+---+---+---+---+---+\n";
+
+    std::ostringstream output;
+    output << '\n';
+    for (int rank = RANK_8; rank >= RANK_1; --rank) {
+        output << BORDER << " |";
+        for (int file = FILE_A; file <= FILE_H; ++file) {
+            output << ' '
+                   << piece_character(position.piece_on(
+                          make_square(File(file), Rank(rank))))
+                   << " |";
+        }
+        output << ' ' << rank + 1 << '\n';
+    }
+    output << BORDER
+           << "   a   b   c   d   e   f   g   h\n\n"
+           << "Fen: " << position.fen() << '\n'
+           << "Key: " << std::hex << std::uppercase << std::setfill('0')
+           << std::setw(16) << position.key() << std::dec << std::setfill(' ')
+           << "\nCheckers:";
+
+    Bitboard checkers = position.attackers_to(
+        position.king_square(position.side_to_move()),
+        ~position.side_to_move(),
+        position.pieces()
+    );
+    while (checkers != EMPTY_BB)
+        output << ' ' << square_name(pop_lsb(checkers));
+    output << '\n';
+    return output.str();
+}
+
 void emit_score(
     std::ostream& output,
     Value value,
@@ -426,6 +475,7 @@ public:
             prior_keys_.clear();
             table_.clear();
             time_manager_.new_game();
+            emit(output, position_display(position_));
         } else if (command == "setoption") {
             handle_setoption(stream, output);
         } else if (command == "position") {
@@ -435,7 +485,7 @@ public:
         } else if (command == "bench") {
             handle_bench(stream, output);
         } else if (command == "d") {
-            emit(output, "info string fen " + position_.fen() + "\n");
+            emit(output, position_display(position_));
         } else {
             emit(output, "info string unknown command: " + command + "\n");
         }

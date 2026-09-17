@@ -4,7 +4,10 @@
 
 #include "uci.hpp"
 
+#include "chess/position.hpp"
+
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -99,6 +102,8 @@ bool run_uci_tests() {
              << "d\n"
              << "position fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n"
              << "d\n"
+             << "position fen 4k3/4R3/8/8/8/8/8/4K3 b - - 0 1\n"
+             << "d\n"
              << "position fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - moves f6e4\n"
              << "d\n"
              << "go movetime 20\n"
@@ -122,6 +127,12 @@ bool run_uci_tests() {
     }
 
     const std::string text = output.str();
+    const auto start_position = mors::Position::from_fen(mors::START_FEN);
+    std::ostringstream start_key;
+    if (start_position) {
+        start_key << "Key: " << std::hex << std::uppercase << std::setfill('0')
+                  << std::setw(16) << start_position->key() << '\n';
+    }
     const bool passed =
            expect_contains(
                text,
@@ -200,26 +211,42 @@ bool run_uci_tests() {
                            "invalid EvalFile must report an error")
         && expect_contains(
                text,
-               "info string fen 4k3/8/8/8/8/8/8/R4RK1 b - - 1 1\n",
+               "Fen: 4k3/8/8/8/8/8/8/R4RK1 b - - 1 1\n",
                "Chess960 rook-square castling input must be accepted"
            )
         && expect_contains(
                text,
-               "info string fen r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1\n",
+               "Fen: r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1\n",
                "classical king-destination castling input must remain accepted"
            )
-        && expect_contains(text, "info string fen rnbqkbnr/pppp1ppp/",
+        && expect_contains(text, "Fen: rnbqkbnr/pppp1ppp/",
                            "position moves must update the board")
         && expect_contains(
                text,
-               "info string fen rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n",
+               "Fen: rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 0 1\n",
                "complete six-field FEN must be accepted"
            )
         && expect_contains(
                text,
-               "info string fen rnbqkb1r/pp2pppp/3p4/8/3Nn3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 2\n",
+               "Fen: rnbqkb1r/pp2pppp/3p4/8/3Nn3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 2\n",
                "four-field FEN followed by moves must be accepted"
            )
+        && expect_contains(
+               text,
+               " | r | n | b | q | k | b | n | r | 8\n",
+               "d must render the board"
+           )
+        && expect_contains(text, "   a   b   c   d   e   f   g   h\n",
+                           "d must render file labels")
+        && expect(start_position.has_value(), "start position must parse")
+        && expect_contains(text, start_key.str(),
+                           "d must print the internal position key")
+        && expect_contains(text, "Checkers:\n",
+                           "d must print an empty checker list when appropriate")
+        && expect_contains(text, "Checkers: e7\n",
+                           "d must print checking-piece squares")
+        && expect_contains(text, "Fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n",
+                           "ucinewgame must display the reset position")
         && expect_contains(text, "bestmove ", "search must emit bestmove")
         && expect_not_contains(text, "search busy",
                                "stop must join before the next command")
