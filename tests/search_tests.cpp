@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -697,6 +698,58 @@ bool test_cooperative_stop_and_deadline(const nnue::Network& network) {
                   "timed stop must restore the root position");
 }
 
+bool test_ponder_lifecycle(const nnue::Network& network) {
+    auto parsed = Position::from_fen(START_FEN);
+    if (!expect(parsed.has_value(), "ponder FEN must parse"))
+        return false;
+
+    TranspositionTable table(1);
+    SearchThreadPool pool(table, network);
+    SearchLimits limits{.max_depth = MAX_PLY};
+    limits.start_time = std::chrono::steady_clock::now();
+    limits.soft_time = std::chrono::milliseconds(2);
+    limits.hard_time = std::chrono::milliseconds(5);
+    limits.ponder = true;
+
+    std::atomic_bool completed{false};
+    SearchResult result;
+    std::string error;
+    pool.start(
+        *parsed,
+        limits,
+        [&](const SearchResult& current, std::string_view failure) {
+            result = current;
+            error = failure;
+            completed.store(true, std::memory_order_release);
+        }
+    );
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    if (!expect(
+                pool.searching()
+                    && !completed.load(std::memory_order_acquire),
+                "pondering must suppress the original time deadline")
+        || !expect(pool.ponderhit(),
+                   "ponderhit must activate the running ponder search")
+        || !expect(!pool.ponderhit(),
+                   "ponderhit must be accepted only once per search")) {
+        pool.request_stop();
+        pool.wait();
+        return false;
+    }
+
+    const auto hit = std::chrono::steady_clock::now();
+    pool.wait();
+    const auto elapsed_after_hit = std::chrono::steady_clock::now() - hit;
+    return expect(completed.load(std::memory_order_acquire) && error.empty(),
+                  "ponder search must complete normally after ponderhit")
+        && expect(result.completed_depth > 0,
+                  "ponder search must retain completed iterative depths")
+        && expect(elapsed_after_hit < std::chrono::seconds(1),
+                  "ponderhit must activate the stored time budget")
+        && expect(!pool.searching(), "ponder completion must leave the pool idle");
+}
+
 bool test_draw_rules(const nnue::Network& network) {
     auto insufficient = Position::from_fen(
         "8/8/8/8/8/2k5/8/2K5 w - - 0 1"
@@ -772,6 +825,7 @@ bool run_search_tests() {
                      && test_persistent_thread_pool(*loaded)
                      && test_node_limit(*loaded)
                      && test_cooperative_stop_and_deadline(*loaded)
+                     && test_ponder_lifecycle(*loaded)
                      && test_draw_rules(*loaded)
                      && test_null_move_material_gate(*loaded);
     if (passed)

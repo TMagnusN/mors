@@ -30,6 +30,7 @@ class Network;
 }
 
 struct SearchResult;
+struct SearchTimeControl;
 
 struct SearchLimits final {
     Depth max_depth = 1;
@@ -46,6 +47,12 @@ struct SearchLimits final {
     std::chrono::steady_clock::time_point start_time{};
     std::chrono::milliseconds soft_time{};
     std::chrono::milliseconds hard_time{};
+    bool ponder = false;
+
+    // Owned and wired by SearchThreadPool for a ponder job. Search workers
+    // observe it to suppress deadlines until ponderhit atomically publishes a
+    // fresh time origin. Standalone searches leave this null.
+    SearchTimeControl* time_control = nullptr;
 
     // Toggle only main-search SEE pruning for controlled comparisons.
     // qsearch SEE and history learning remain enabled in both cases.
@@ -149,6 +156,7 @@ public:
         const SearchLimits& limits,
         CompletionCallback completion_callback = {}
     );
+    [[nodiscard]] bool ponderhit() noexcept;
     void request_stop() noexcept;
     void wait();
     [[nodiscard]] bool searching() const;

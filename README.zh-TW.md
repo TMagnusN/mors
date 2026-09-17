@@ -76,7 +76,7 @@ go movetime 1000
 
 - 使用 aspiration window 的 iterative-deepening Principal Variation Search，以及共享 TT 的持久化 Lazy SMP workers。
 - 增量更新的 P2-H32 神經網路評估。
-- Clustered transposition table，可透過 UCI `Hash` 設定 1–8,589,934,592 MiB（8 PiB）。
+- Clustered transposition table，可透過 UCI `Hash` 設定 1–2,147,483,647 MiB（2 PiB 減 1 MiB）。
 - Check-aware quiescence search，整合 TT 讀寫、non-PV bound cutoff、raw static-eval 快取、SEE 與 late-move pruning；未被將軍時只生成 noisy moves。
 - Static Exchange Evaluation，以及 TT、killer、countermove、butterfly、continuation 和 noisy history 走法排序；各 worker 的私有 history 跨搜尋保留。
 - Reverse／forward futility pruning、帶 verification 的 null-move pruning、late-move pruning／reduction、internal iterative reduction，以及包含 multi-cut 處理的 singular extension。
@@ -162,6 +162,16 @@ build/release-avx2+bmi2/Dragon-of-MORS-avx2+bmi2.exe
 
 Release 預設使用 `-O3`、LTO、section garbage collection，並靜態連結 GCC／MinGW C++ runtime。預設 NNUE 與 Windows icon 也會嵌入 executable。
 
+### PGO + LTO release
+
+先編譯帶 instrumentation 的引擎、以內建 bench 蒐集 profile，再使用該 profile 配合 LTO 重新編譯：
+
+```bash
+make -C src -j$(nproc) ARCH=avx2+bmi2 profile-build
+```
+
+預設訓練 workload 是 `bench 12 8 1`（depth 12、Hash 8 MiB、單執行緒）。可用 `PGO_BENCH_DEPTH`、`PGO_BENCH_HASH` 與 `PGO_BENCH_THREADS` 調整。最終 executable 會覆寫 `build/release-<arch>` 中的一般 release executable。
+
 ### 指令集版本
 
 | `ARCH` | CPU 需求 | Sliding attacks |
@@ -197,6 +207,16 @@ make -C src ARCH=avx2+bmi2 ttbench
 make -C src ARCH=avx2+bmi2 CONFIG=release datagen
 ```
 
+引擎執行檔也提供固定搜尋 bench，涵蓋 50 個標準棋與 4 個 Chess960 局面：
+
+```text
+Dragon-of-MORS-avx2+bmi2.exe bench
+Dragon-of-MORS-avx2+bmi2.exe bench 12 16 1
+```
+
+三個選填參數依序為搜尋深度、Hash MiB 與執行緒數；最後一行會輸出總
+nodes、NPS、局面數及搜尋 checksum。
+
 Search-distillation generator 的完整說明位於 [`tools/DATAGEN.md`](tools/DATAGEN.md)。
 
 ## 使用 MORS
@@ -212,13 +232,14 @@ MORS 接受標準六欄 FEN，也接受省略 move counters 的常見四欄或�
 | 選項 | 範圍／預設值 | 說明 |
 |---|---|---|
 | `Threads` | 1–22,528；預設 1 | 持久化 Lazy SMP workers，共享 TT，各自保有獨立搜尋狀態；實際建立數量受可用系統資源限制。 |
-| `Hash` | 1–8,589,934,592 MiB（8 PiB）；預設 256 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
+| `Hash` | 1–2,147,483,647 MiB（2 PiB 減 1 MiB）；預設 256 MiB | Transposition table 容量；實際配置受可用記憶體與位址空間限制。 |
 | `NumaPolicy` | `auto`／`none`；預設 `auto` | 可用 CPU 跨 NUMA 節點或 processor group 時綁定 workers，並在使用中的節點建立 NNUE 複本；`none` 交由 OS 排程並共用一份網路。 |
 | `Clear Hash` | Button | 清除全部 TT entries。 |
 | `SyzygyPath` | 預設 `<empty>` | 殘局庫目錄；Windows 多個路徑以分號分隔，`<empty>` 卸載。 |
 | `SyzygyProbeLimit` | 0–7；預設 7 | 查庫子數上限（含雙方國王）；0 停用。 |
 | `SyzygyProbeDepth` | 1–100；預設 1 | 實際最大子數局面的最低查庫搜尋深度。 |
 | `Syzygy50MoveRule` | 預設 `true` | 查庫時遵守五十步規則。 |
+| `Ponder` | 預設 `true` | 宣告支援 UCI ponder；`go ponder` 不受 deadline 限制，收到 `ponderhit` 後才啟用原本的時間控制。 |
 | `UCI_Chess960` | false | 啟用 Chess960 FEN 與易位記法。 |
 | `EvalFile` | 預設使用內建網路 | 載入相容的外部 P2-H32 網路。 |
 | `Move Overhead` | 0–5000 ms；預設 10 ms | 為 GUI、排程及通訊延遲預留時間。 |

@@ -76,7 +76,7 @@ go movetime 1000
 
 - Iterative-deepening Principal Variation Search with aspiration windows and persistent Lazy SMP workers sharing the transposition table.
 - Incrementally updated P2-H32 neural evaluation.
-- Clustered transposition table with a configurable 1–8,589,934,592 MiB (8 PiB) UCI Hash option.
+- Clustered transposition table with a configurable 1–2,147,483,647 MiB (2 PiB minus 1 MiB) UCI Hash option.
 - Check-aware quiescence search with TT probe/store, non-PV bound cutoffs, raw static-evaluation caching, SEE and late-move pruning; outside check it generates only noisy moves.
 - Static Exchange Evaluation and TT, killer, countermove, butterfly, continuation and noisy-history move ordering. Worker-private histories persist across searches.
 - Reverse and forward futility pruning, null-move pruning with verification, late-move pruning and reductions, internal iterative reduction, and singular extension with multi-cut handling.
@@ -163,6 +163,16 @@ build/release-avx2+bmi2/Dragon-of-MORS-avx2+bmi2.exe
 
 Release builds use `-O3`, LTO by default, section garbage collection, and static GCC/MinGW C++ runtimes. The default NNUE and Windows icon are embedded into the executable.
 
+### PGO + LTO release
+
+Build an instrumented engine, train it with the built-in bench, and rebuild it with the collected profile plus LTO:
+
+```bash
+make -C src -j$(nproc) ARCH=avx2+bmi2 profile-build
+```
+
+The default training workload is `bench 12 8 1` (depth 12, 8 MiB Hash, one thread). It can be adjusted with `PGO_BENCH_DEPTH`, `PGO_BENCH_HASH`, and `PGO_BENCH_THREADS`. The final executable replaces the normal release executable in `build/release-<arch>`.
+
 ### Architecture variants
 
 | `ARCH` | CPU requirement | Sliding attacks |
@@ -198,6 +208,17 @@ make -C src ARCH=avx2+bmi2 ttbench
 make -C src ARCH=avx2+bmi2 CONFIG=release datagen
 ```
 
+The engine executable also provides a fixed search benchmark over 50
+classical and four Chess960 positions:
+
+```text
+Dragon-of-MORS-avx2+bmi2.exe bench
+Dragon-of-MORS-avx2+bmi2.exe bench 12 16 1
+```
+
+The optional arguments are depth, Hash in MiB, and thread count. The final
+line reports aggregate nodes, NPS, position counts, and a search checksum.
+
 The search-distillation generator is documented in [`tools/DATAGEN.md`](tools/DATAGEN.md).
 
 ## Using MORS
@@ -213,13 +234,14 @@ For Chess960, enable `UCI_Chess960` before sending the position. MORS accepts bo
 | Option | Range/default | Description |
 |---|---|---|
 | `Threads` | 1–22,528; default 1 | Persistent Lazy SMP workers with a shared TT and private search state; creation depends on available system resources. |
-| `Hash` | 1–8,589,934,592 MiB (8 PiB); default 256 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
+| `Hash` | 1–2,147,483,647 MiB (2 PiB minus 1 MiB); default 256 MiB | Transposition-table capacity; allocation depends on available memory and address space. |
 | `NumaPolicy` | `auto` / `none`; default `auto` | Bind workers and replicate NNUE on used NUMA nodes when multiple nodes or processor groups are available; `none` uses OS scheduling and one shared network. |
 | `Clear Hash` | Button | Clears all transposition-table entries. |
 | `SyzygyPath` | Default `<empty>` | Tablebase directories; separate Windows paths with semicolons. `<empty>` unloads them. |
 | `SyzygyProbeLimit` | 0–7; default 7 | Maximum piece count including both kings; 0 disables probing. |
 | `SyzygyProbeDepth` | 1–100; default 1 | Minimum search depth for probing at the actual maximum piece count. |
 | `Syzygy50MoveRule` | Default `true` | Respect the fifty-move rule when probing. |
+| `Ponder` | Default `true` | Advertises UCI pondering; `go ponder` runs without a deadline until `ponderhit` activates the supplied time control. |
 | `UCI_Chess960` | false | Enables Chess960 FEN and castling notation. |
 | `EvalFile` | Embedded network by default | Loads a compatible external P2-H32 network. |
 | `Move Overhead` | 0–5000 ms; default 10 ms | Reserves time for GUI, scheduling, and communication delay. |

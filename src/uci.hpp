@@ -12,5 +12,6 @@ namespace mors {
 // frontend testable without coupling it to the process-wide standard streams.
 int run_uci(std::istream& input, std::ostream& output);
 int run_uci();
+int run_bench(int argc, char** argv);
 
 } // namespace mors

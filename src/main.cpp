@@ -4,12 +4,14 @@
 
 #include "uci.hpp"
 
+#include <string_view>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 
-int main() {
+int main(int argc, char** argv) {
 #ifdef _WIN32
     // MORS emits UTF-8 UCI text. Match the Windows console code pages to the
     // execution character set so names such as "Øen" are not mojibake.
@@ -17,5 +19,7 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
-    return mors::run_uci();
+    if (argc <= 1 || std::string_view(argv[1]) == "uci")
+        return mors::run_uci();
+    return mors::run_bench(argc, argv);
 }

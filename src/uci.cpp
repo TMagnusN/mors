@@ -14,12 +14,15 @@
 #include "search/time.hpp"
 #include "search/tt.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -55,6 +58,68 @@ namespace {
 
 constexpr std::string_view DEFAULT_NETWORK_FILENAME =
     "mors-p2h32-s14400M-o3183M-c+frc.mnue";
+constexpr int DEFAULT_BENCH_DEPTH = 12;
+constexpr std::size_t DEFAULT_BENCH_HASH_MB = 16;
+
+constexpr std::array<std::string_view, 50> SEARCH_BENCH_FENS{{
+    "rnb1k2r/pp2bp1p/2p1pp2/q7/8/1P6/PBPPQPPP/2KR1BNR w kq - 4 9",
+    "1r1qk1nr/pppn1ppp/3p4/3Pp1b1/2P5/2N2Q1P/PP2PPP1/R1B1KB1R w KQk - 3 9",
+    "r3kbnr/pp3ppp/2n5/2P1pq2/N1Pp2b1/5N2/PP1BPPPP/R2QKB1R w KQkq - 0 9",
+    "rnb1k2r/pppp2pp/8/8/2P2Bn1/2q4N/P3PPPP/R2QKB1R w KQkq - 0 9",
+    "r2qk2r/ppp1bppp/2n1bn2/8/2NPp3/2P5/PP2BPPP/RNBQ1RK1 w kq - 1 9",
+    "r1b1kb1r/1pqnppp1/p2p1n1p/8/3NP1PP/P1N5/1PP2P2/R1BQKB1R w KQkq - 1 9",
+    "rnb1kb1r/pp3pp1/1qpnp2p/3p4/3PP2B/P1N2P1N/1PP3PP/R2QKB1R w KQkq - 0 9",
+    "r1bqr1k1/pppp1ppp/2n5/3np1N1/4P3/2P5/PPP2PPP/R1BQ1RK1 w - - 0 9",
+    "r1bqkb1r/3n1ppp/p1p1pn2/1p6/8/5NP1/PPQPPPBP/RNB2RK1 w kq - 0 9",
+    "r2qk2r/ppp1bppp/2np2n1/3N4/2BPPpb1/5N2/PPP3PP/R1BQ1RK1 w kq - 4 9",
+    "r1bqkbnr/3n1ppp/p3p3/2p5/Pp1P4/4PN2/1P2BPPP/RNBQ1RK1 w kq - 0 9",
+    "r1bqk2r/ppp1bppp/2n1p3/3pP3/2PP1B2/2PQ4/P4PPP/R3KBNR w KQkq d6 0 9",
+    "r1bqk1nr/1ppn1pb1/p2p2pp/4p3/P2PP3/2NB1N2/1PP2PPP/R1BQ1RK1 w kq - 0 9",
+    "r1bq1rk1/pp1pppbp/5np1/4n3/2PN4/1PN3P1/P3PPBP/R1BQK2R w KQ - 1 9",
+    "rn1qkb1r/1p2npp1/4p2p/p2pPb2/3P4/P1N5/1P2NPPP/R1BQKB1R w KQkq - 2 9",
+    "r1bqk2r/1p1nbpp1/p2p1n1p/2pPp3/2P5/P1N1PN1P/1P3PP1/R1BQKB1R w KQkq - 1 9",
+    "r1bqk2r/2p1bpp1/p1np1n2/1p2p2p/3PP3/2N1BP2/PPPQN1PP/2KR1B1R w kq - 0 9",
+    "r1bqk2r/p2nppbp/2pp2p1/1p2Pn2/3P1P2/2N1BN2/PPPQ2PP/R3KB1R w KQkq - 3 9",
+    "r1b1k2r/pp1n1ppp/2p1pn2/q2p4/1bPP4/1PN2NP1/P2BPPBP/R2QK2R w KQkq - 3 9",
+    "r1bq1bnr/p1p4p/1pk2p2/3pp1pQ/3P4/4P1B1/PPP2PPP/RN2K1NR w KQ - 0 9",
+    "rn1qkb1r/1bp2ppp/p3pn2/8/Pp1PP3/1B3P2/1P2N1PP/RNBQK2R w KQkq - 0 9",
+    "rnbq1rk1/1p2ppbp/2p3p1/p2n4/3P4/2NB1N1P/PPP2PP1/R1BQ1RK1 w - - 0 9",
+    "rn1qkb1r/1p3p2/p1p1pn1p/2Pp1bp1/3P1B2/2N1PN2/PP2BPPP/R2QK2R w KQkq - 0 9",
+    "r1bqk2r/pp1n1pp1/3p1n1p/2pPp3/1bP1P3/2N1BP2/PP4PP/R2QKBNR w KQkq - 2 9",
+    "r1bqkb1r/1p2np1p/p1npp1p1/8/3NPP2/2NBB3/PPP3PP/R2QK2R w KQkq - 0 9",
+    "rnbq1rk1/p1p2pp1/1p3p1p/8/1bBP4/2N1P3/PP2NPPP/R2QK2R w KQ - 0 9",
+    "r1bqkb1r/pp4pp/2p1p3/3pnp1n/2PP4/2NBPN2/PP3PPP/R2QK2R w KQkq - 0 9",
+    "rn1q1rk1/p1ppbppp/b3pn2/1p6/2PP4/1P3NP1/P2BPPBP/RN1Q1RK1 w - - 0 9",
+    "rnbq1rk1/p3npbp/1pp1p1p1/3p4/2PP1B2/2NBPN2/PP3PPP/2RQK2R w K - 0 9",
+    "rnbqk2r/1pp2pbp/p2p2p1/3pP3/3P1P2/3B1N2/PPP3PP/R1BQK2R w KQkq - 0 9",
+    "rn1q1rk1/pbp1ppbp/1p3np1/3p4/3PPP2/2N1BB1P/PPP3P1/R2QK1NR w KQ - 0 9",
+    "rnbqk2r/pp2p1bp/2pn1pp1/3pN3/3P4/2P3P1/PP1NPPBP/R1BQ1RK1 w kq - 0 9",
+    "r1bq1rk1/p1pp1ppp/1pn5/4P3/2P1n3/P3PN2/1P1B1PPP/R2QKB1R w KQ - 0 9",
+    "r1bqkbnr/ppp2p2/2npp3/8/2PP1P1p/3NP1pP/PP4P1/RNBQKB1R w KQkq - 0 9",
+    "r2qk2r/ppp3pp/2n1b3/3n4/1b6/2N1PN2/PP3PPP/R1BQKB1R w KQkq - 0 9",
+    "r1bqk2r/pppnn1b1/3pp1pp/5p1P/4PP2/2PP1N2/PP2B1P1/RNBQK2R w KQkq - 1 9",
+    "r1b1kb1r/1p1p1ppp/p1q1pn2/8/4P3/1P1B4/P1P2PPP/RNBQ1RK1 w kq - 0 9",
+    "r1bqk1nr/pp1p1ppp/1b6/8/1n2P3/1N1B4/PP3PPP/RNBQK2R w KQkq - 5 9",
+    "r2q1rk1/ppp1ppb1/2np1np1/6Bp/3PP1bP/2PQ1N2/PP1N1PP1/R3KB1R w KQ - 5 9",
+    "rn1qkb1r/1bpp2pp/p3p3/3n1p2/Pp1P4/4PNB1/1PPNBPPP/R2QK2R w KQkq - 0 9",
+    "r1b1kbnr/1pq2pp1/p1np3p/4p3/2B1P3/5N2/PPP2PPP/RNBQR1K1 w kq - 2 9",
+    "r1b1kb1r/pp3ppp/1q2pn2/2pP4/2pn4/2N2NP1/PP2PPBP/R1BQ1RK1 w kq - 0 9",
+    "r3kb1r/ppp1p2p/2np1np1/5q2/3P4/5N2/PPP2PPP/RNBQ1RK1 w kq - 0 9",
+    "r1bqnrk1/pp1nbppp/3pp3/2p3B1/3PP3/2PB1N1P/PP3PP1/RN1Q1RK1 w - - 1 9",
+    "r1bqr1k1/pp1nbppp/4pn2/2pp4/3P1B1P/2PBPN2/PP1N1PP1/R2QK2R w KQ - 1 9",
+    "r1b1kb1r/1pq2ppp/p1np1n2/2p1p3/P3P3/2N2NP1/1PPP1PBP/R1BQR1K1 w kq - 0 9",
+    "rnbq1rk1/1p2ppb1/2pp1npp/p7/P2PP3/2N1BN2/1PP1BPPP/R2Q1RK1 w - - 0 9",
+    "r1bqk2r/pp1nppbp/2np4/6B1/2P5/2NQPN2/PP3PPP/R3KB1R w KQkq - 1 9",
+    "rnbq1rk1/1p2ppb1/p1p2n1p/3p2p1/2PP4/2N1PNBP/PP3PP1/R2QKB1R w KQ - 1 9",
+    "rn2k2r/ppq2p1p/2ppbp2/2b1p3/2B1P2N/3P4/PPP2PPP/RN1Q1RK1 w kq - 2 9",
+}};
+
+constexpr std::array<std::string_view, 4> SEARCH_BENCH_FRC_FENS{{
+    "bb1n1rkr/ppp1Q1pp/3n1p2/3p4/3P4/6Pq/PPP1PP1P/BB1NNRKR w HFhf - 0 5",
+    "nqbnrkrb/pppppppp/8/8/8/8/PPPPPPPP/NQBNRKRB w KQkq - 0 1",
+    "bb1rknrq/pppppppp/8/5N2/2P5/3P4/nP2PPPP/BBNRK1RQ w GDgd - 0 5",
+    "rbk2r1q/1ppbpnpp/3p1p1n/p7/1P2PP1P/6P1/P1PP4/RBKNBRNQ b FAfa - 2 7",
+}};
 
 [[nodiscard]] std::expected<nnue::Network, std::string> load_default_network() {
     const std::span bytes{
@@ -149,6 +214,145 @@ void emit_score(
     output << "score mate " << (value >= 0 ? moves : -moves);
 }
 
+[[nodiscard]] bool run_search_bench(
+    TranspositionTable& table,
+    const nnue::Network& network,
+    SearchThreadPool& thread_pool,
+    int depth,
+    std::size_t hash_mb,
+    std::ostream& output,
+    bool quiet
+) {
+    using Clock = std::chrono::steady_clock;
+
+    std::uint64_t total_nodes = 0;
+    double total_seconds = 0.0;
+    std::uint64_t checksum = 0;
+    std::size_t position_index = 0;
+
+    if (!quiet) {
+        output << "--------------------------------------------------\n"
+               << "      Variant       Nodes       Elapsed             NPS\n"
+               << "--------------------------------------------------\n";
+    }
+
+    const auto run_position = [&](std::string_view fen, bool chess960) {
+        auto parsed = Position::from_fen(fen, chess960);
+        if (!parsed) {
+            output << "info string invalid "
+                   << (chess960 ? "FRC" : "classical")
+                   << " bench position " << position_index
+                   << ": " << parsed.error() << '\n';
+            return false;
+        }
+
+        table.clear();
+        thread_pool.clear();
+
+        SearchLimits limits;
+        limits.max_depth = depth;
+        limits.start_time = Clock::now();
+
+        SearchResult result;
+        std::string error;
+        const auto started = Clock::now();
+        try {
+            thread_pool.start(
+                *parsed,
+                limits,
+                [&](const SearchResult& completed, std::string_view failure) {
+                    result = completed;
+                    error = failure;
+                }
+            );
+            thread_pool.wait();
+        } catch (const std::exception& exception) {
+            output << "info string bench search failed at position "
+                   << position_index << ": " << exception.what() << '\n';
+            return false;
+        }
+        const double seconds =
+            std::chrono::duration<double>(Clock::now() - started).count();
+
+        if (!error.empty()) {
+            output << "info string bench search failed at position "
+                   << position_index << ": " << error << '\n';
+            return false;
+        }
+        if (result.completed_depth != depth) {
+            output << "info string incomplete bench position "
+                   << position_index << " depth " << result.completed_depth
+                   << " expected " << depth << '\n';
+            return false;
+        }
+
+        const std::uint64_t nodes = result.stats.nodes;
+        const std::uint64_t nps = seconds > 0.0
+            ? static_cast<std::uint64_t>(
+                static_cast<double>(nodes) / seconds
+            )
+            : 0;
+        total_nodes += nodes;
+        total_seconds += seconds;
+        checksum = (checksum * 1'315'423'911ULL)
+            ^ nodes
+            ^ (static_cast<std::uint64_t>(result.best_move.raw()) << 32)
+            ^ static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(result.value)
+            )
+            ^ (static_cast<std::uint64_t>(chess960) << 63);
+
+        if (!quiet) {
+            output << std::setw(3) << position_index
+                   << std::setw(9) << (chess960 ? "frc" : "classic")
+                   << std::setw(12) << nodes
+                   << std::setw(13) << std::fixed << std::setprecision(3)
+                   << seconds << "s"
+                   << std::setw(16) << nps << " N/s\n";
+        }
+        ++position_index;
+        return true;
+    };
+
+    for (const std::string_view fen : SEARCH_BENCH_FENS)
+        if (!run_position(fen, false))
+            return false;
+    for (const std::string_view fen : SEARCH_BENCH_FRC_FENS)
+        if (!run_position(fen, true))
+            return false;
+
+    table.clear();
+    thread_pool.clear();
+
+    const std::uint64_t total_nps = total_seconds > 0.0
+        ? static_cast<std::uint64_t>(
+            static_cast<double>(total_nodes) / total_seconds
+        )
+        : 0;
+
+    if (!quiet) {
+        output << "--------------------------------------------------\n"
+               << std::setw(15) << total_nodes
+               << std::setw(13) << std::fixed << std::setprecision(3)
+               << total_seconds << "s"
+               << std::setw(16) << total_nps << " N/s\n"
+               << "--------------------------------------------------\n"
+               << "depth " << depth
+               << " hash " << hash_mb
+               << " threads " << thread_pool.size()
+               << " evaluator " << network.source().filename().string()
+               << " positions " << position_index
+               << " frc " << SEARCH_BENCH_FRC_FENS.size()
+               << " checksum " << checksum << '\n';
+    }
+
+    output << "Bench: " << total_nodes << " nodes " << total_nps
+           << " nps positions " << position_index
+           << " frc " << SEARCH_BENCH_FRC_FENS.size()
+           << " checksum " << checksum << '\n';
+    return true;
+}
+
 class UciSession final {
 public:
     explicit UciSession(nnue::Network network)
@@ -170,7 +374,7 @@ public:
 
         if (command == "uci") {
             std::ostringstream response;
-            response << "id name Dragon of MORS 0.2.0\n"
+            response << "id name Dragon of MORS 0.2.1\n"
                      << "id author Theodore M. A. Øen (USA) & Codex (USA)\n"
                      << "option name Threads type spin default 1 min 1 max "
                      << MAX_SEARCH_THREADS << "\n"
@@ -182,6 +386,7 @@ public:
                      << "option name SyzygyProbeLimit type spin default 7 min 0 max 7\n"
                      << "option name SyzygyProbeDepth type spin default 1 min 1 max 100\n"
                      << "option name Syzygy50MoveRule type check default true\n"
+                     << "option name Ponder type check default true\n"
                      << "option name UCI_Chess960 type check default false\n"
                      << "option name EvalFile type string default " << DEFAULT_NETWORK_FILENAME << "\n"
                      << "option name Move Overhead type spin default "
@@ -204,6 +409,11 @@ public:
             stop_search();
             return false;
         }
+        if (command == "ponderhit") {
+            if (!thread_pool_.ponderhit())
+                emit(output, "info string ponderhit ignored: no active ponder search\n");
+            return true;
+        }
 
         if (thread_pool_.searching()) {
             emit(output, "info string search busy, send stop first\n");
@@ -222,6 +432,8 @@ public:
             handle_position(stream, output);
         } else if (command == "go") {
             handle_go(stream, output);
+        } else if (command == "bench") {
+            handle_bench(stream, output);
         } else if (command == "d") {
             emit(output, "info string fen " + position_.fen() + "\n");
         } else {
@@ -289,6 +501,15 @@ private:
             }
             chess960_ = value_text == "true";
             position_.set_chess960(chess960_);
+            return;
+        }
+
+        if (name == "Ponder") {
+            if (value_text != "true" && value_text != "false") {
+                emit(output, "info string Ponder must be true or false\n");
+                return;
+            }
+            ponder_enabled_ = value_text == "true";
             return;
         }
 
@@ -476,6 +697,10 @@ private:
         while (stream >> token) {
             saw_parameter = true;
             std::string value_text;
+            if (token == "ponder") {
+                params.ponder = true;
+                continue;
+            }
             if (token == "infinite") {
                 params.infinite = true;
                 continue;
@@ -652,8 +877,17 @@ private:
                         ? fallback
                         : result.best_move;
                     response << "bestmove "
-                             << move_to_uci(best_move, root_chess960)
-                             << '\n';
+                             << move_to_uci(best_move, root_chess960);
+                    if (ponder_enabled_
+                        && result.pv_length > 1
+                        && result.principal_variation[0] == best_move) {
+                        response << " ponder "
+                                 << move_to_uci(
+                                        result.principal_variation[1],
+                                        root_chess960
+                                    );
+                    }
+                    response << '\n';
                     emit(*output, response.str());
                 }
             );
@@ -664,6 +898,29 @@ private:
         }
     }
 
+    void handle_bench(std::istringstream& stream, std::ostream& output) {
+        std::string argument;
+        if (stream >> argument) {
+            emit(output, "info string usage: bench\n");
+            return;
+        }
+
+        constexpr std::size_t MEBIBYTE = 1U << 20;
+        const std::size_t hash_mb =
+            (table_.size_bytes() + MEBIBYTE - 1) / MEBIBYTE;
+        if (!run_search_bench(
+                table_,
+                network_,
+                thread_pool_,
+                DEFAULT_BENCH_DEPTH,
+                hash_mb,
+                output,
+                false
+            )) {
+            emit(output, "info string bench failed\n");
+        }
+    }
+
     Position position_;
     TranspositionTable table_;
     nnue::Network network_;
@@ -671,6 +928,7 @@ private:
     timeman::TimeManager time_manager_;
     SearchThreadPool thread_pool_;
     std::mutex output_mutex_;
+    bool ponder_enabled_ = true;
     bool chess960_ = false;
     syzygy::Options syzygy_options_{};
 };
@@ -678,7 +936,7 @@ private:
 } // namespace
 
 int run_uci(std::istream& input, std::ostream& output) {
-    output << "Dragon of MORS 0.2.0 by Theodore M. A. Øen (USA) & Codex (USA) "
+    output << "Dragon of MORS 0.2.1 by Theodore M. A. Øen (USA) & Codex (USA) "
               "(see AUTHORS file)\n";
 
     initialize_attacks();
@@ -698,6 +956,61 @@ int run_uci(std::istream& input, std::ostream& output) {
             break;
     }
     return 0;
+}
+
+int run_bench(int argc, char** argv) {
+    const auto print_usage = [] {
+        std::cerr
+            << "usage: Dragon-of-MORS.exe bench [depth] [hash_mb] [threads]\n";
+    };
+
+    if (argc < 2 || std::string_view(argv[1]) != "bench" || argc > 5) {
+        print_usage();
+        return 1;
+    }
+
+    int depth = DEFAULT_BENCH_DEPTH;
+    std::size_t hash_mb = DEFAULT_BENCH_HASH_MB;
+    std::size_t threads = 1;
+    const auto parse_optional = [&](int index, auto& value) {
+        return argc <= index
+            || parse_integer(std::string_view(argv[index]), value);
+    };
+    if (!parse_optional(2, depth)
+        || !parse_optional(3, hash_mb)
+        || !parse_optional(4, threads)
+        || depth < 1 || depth > MAX_PLY
+        || hash_mb < 1 || hash_mb > MAX_TT_SIZE_MB
+        || threads < 1 || threads > MAX_SEARCH_THREADS) {
+        print_usage();
+        return 1;
+    }
+
+    try {
+        initialize_attacks();
+        auto loaded = load_default_network();
+        if (!loaded) {
+            std::cerr << "info string NNUE load failed: "
+                      << loaded.error() << '\n';
+            return 1;
+        }
+
+        TranspositionTable table(hash_mb);
+        SearchThreadPool thread_pool(table, *loaded, threads);
+        const bool ok = run_search_bench(
+            table,
+            *loaded,
+            thread_pool,
+            depth,
+            hash_mb,
+            std::cout,
+            true
+        );
+        return ok ? 0 : 1;
+    } catch (const std::exception& error) {
+        std::cerr << "info string bench failed: " << error.what() << '\n';
+        return 1;
+    }
 }
 
 int run_uci() {

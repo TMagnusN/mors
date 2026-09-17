@@ -1,4 +1,4 @@
-# MORS - a modern C++23 chess engine
+# Dragon-of-MORS - a modern C++23 chess engine
 # Copyright (C) 2026 Theodore Magnus Øen
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -11,10 +11,21 @@ WINDRES ?= windres
 ARCH ?= generic
 CONFIG ?= release
 LTO ?= 1
+PGO ?= 0
+PGO_BENCH_DEPTH ?= 12
+PGO_BENCH_HASH ?= 8
+PGO_BENCH_THREADS ?= 1
 
 ifeq ($(LTO),1)
 else ifneq ($(LTO),0)
     $(error Unsupported LTO '$(LTO)'; expected 0 or 1)
+endif
+
+ifeq ($(PGO),0)
+else ifeq ($(PGO),generate)
+else ifeq ($(PGO),use)
+else
+    $(error Unsupported PGO '$(PGO)'; expected 0, generate or use)
 endif
 
 PROJECT_ROOT := ..
@@ -24,23 +35,32 @@ BUILD_DIR := $(BUILD_ROOT)/$(CONFIG)-$(ARCH)
 OBJ_VARIANT := default
 
 ifeq ($(CONFIG),release)
-    ifeq ($(LTO),1)
+    ifneq ($(PGO),0)
+        ifeq ($(LTO),1)
+            OBJ_VARIANT := pgo-lto
+        else
+            OBJ_VARIANT := pgo
+        endif
+    else ifeq ($(LTO),1)
         OBJ_VARIANT := lto
     endif
+else ifneq ($(PGO),0)
+    $(error PGO requires CONFIG=release)
 endif
 
 OBJ_DIR := $(BUILD_DIR)/obj/$(OBJ_VARIANT)
+PGO_DATA_DIR := $(BUILD_DIR)/pgo-data
 
 EXE_EXT := .exe
 
-PERFT_TARGET := $(BUILD_DIR)/mors-perft-$(ARCH)$(EXE_EXT)
-TEST_TARGET := $(BUILD_DIR)/mors-tests-$(ARCH)$(EXE_EXT)
-TT_BENCH_TARGET := $(BUILD_DIR)/mors-ttbench-$(ARCH)$(EXE_EXT)
+PERFT_TARGET := $(BUILD_DIR)/Dragon-of-MORS-perft-$(ARCH)$(EXE_EXT)
+TEST_TARGET := $(BUILD_DIR)/Dragon-of-MORS-tests-$(ARCH)$(EXE_EXT)
+TT_BENCH_TARGET := $(BUILD_DIR)/Dragon-of-MORS-ttbench-$(ARCH)$(EXE_EXT)
 
 ENGINE_ARCH := $(ARCH)
 
-ENGINE_TARGET := $(BUILD_DIR)/mors-$(ENGINE_ARCH)$(EXE_EXT)
-DATAGEN_TARGET := $(BUILD_DIR)/mors-datagen-$(ENGINE_ARCH)$(EXE_EXT)
+ENGINE_TARGET := $(BUILD_DIR)/Dragon-of-MORS-$(ENGINE_ARCH)$(EXE_EXT)
+DATAGEN_TARGET := $(BUILD_DIR)/Dragon-of-MORS-datagen-$(ENGINE_ARCH)$(EXE_EXT)
 
 CPPFLAGS := -I. -I$(PROJECT_ROOT)/vendor/fathom
 
@@ -148,6 +168,14 @@ else ifeq ($(CONFIG),release)
         LINK_FLAGS += -flto=auto
     endif
 
+    ifeq ($(PGO),generate)
+        CONFIG_FLAGS += -fprofile-generate=$(PGO_DATA_DIR)
+        LINK_FLAGS += -fprofile-generate=$(PGO_DATA_DIR)
+    else ifeq ($(PGO),use)
+        CONFIG_FLAGS += -fprofile-use=$(PGO_DATA_DIR) -fprofile-correction
+        LINK_FLAGS += -fprofile-use=$(PGO_DATA_DIR) -fprofile-correction
+    endif
+
 else
 
     $(error Unsupported CONFIG '$(CONFIG)'; expected debug, sanitize or release)
@@ -244,12 +272,15 @@ DEPENDENCIES := \
     all \
     all-versions \
     build \
+    engine \
     release \
+    profile-build \
     debug \
     sanitize \
     test \
     test-run \
     uci \
+    bench \
     perft \
     ttbench \
     ttbench-run \
@@ -269,7 +300,26 @@ all: build
 
 build: $(ENGINE_TARGET) $(PERFT_TARGET)
 
+engine: $(ENGINE_TARGET)
+
 release: build
+
+# Two-pass release build using the engine bench as the training workload.
+# The generate and use passes intentionally share the same object path because
+# GCC keys profile records to the compiled object's output path.
+profile-build:
+	rm -rf "$(PGO_DATA_DIR)" "$(BUILD_DIR)/obj/pgo-lto"
+	rm -f "$(ENGINE_TARGET)"
+	mkdir -p "$(PGO_DATA_DIR)"
+	+$(MAKE) CONFIG=release ARCH=$(ARCH) LTO=1 PGO=generate engine
+	"$(ENGINE_TARGET)" bench $(PGO_BENCH_DEPTH) $(PGO_BENCH_HASH) $(PGO_BENCH_THREADS)
+	if ! find "$(PGO_DATA_DIR)" -type f -name '*.gcda' -print -quit | grep -q .; then \
+	    echo "PGO training produced no .gcda profile data" >&2; \
+	    exit 1; \
+	fi
+	rm -rf "$(BUILD_DIR)/obj/pgo-lto"
+	rm -f "$(ENGINE_TARGET)"
+	+$(MAKE) CONFIG=release ARCH=$(ARCH) LTO=1 PGO=use engine
 
 # Build all four distribution variants.
 #
@@ -301,9 +351,12 @@ test-run: $(TEST_TARGET)
 uci: $(ENGINE_TARGET)
 	$(ENGINE_TARGET)
 
+bench: $(ENGINE_TARGET)
+	$(ENGINE_TARGET) bench
+
 perft:
 	+$(MAKE) CONFIG=release ARCH=$(ARCH) LTO=$(LTO) build
-	$(BUILD_ROOT)/release-$(ARCH)/mors-perft-$(ARCH)$(EXE_EXT) 5
+	$(BUILD_ROOT)/release-$(ARCH)/Dragon-of-MORS-perft-$(ARCH)$(EXE_EXT) 5
 
 ttbench:
 	+$(MAKE) CONFIG=release ARCH=$(ARCH) LTO=$(LTO) ttbench-run
@@ -393,7 +446,7 @@ clean:
 -include $(DEPENDENCIES)
 # Batch probe tool for independent oracle checks.
 .PHONY: syzygy-check
-syzygy-check: $(BUILD_DIR)/mors-syzygy-check$(EXE_EXT)
-$(BUILD_DIR)/mors-syzygy-check$(EXE_EXT): $(CORE_OBJECTS) $(OBJ_DIR)/tools/syzygy_main.o
+syzygy-check: $(BUILD_DIR)/Dragon-of-MORS-syzygy-check$(EXE_EXT)
+$(BUILD_DIR)/Dragon-of-MORS-syzygy-check$(EXE_EXT): $(CORE_OBJECTS) $(OBJ_DIR)/tools/syzygy_main.o
 	$(CXX) $^ $(LDFLAGS) -o "$@"
 -include $(OBJ_DIR)/tools/syzygy_main.d

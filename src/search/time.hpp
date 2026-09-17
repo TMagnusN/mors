@@ -27,6 +27,7 @@ struct GoParams final {
     std::int64_t winc = 0;
     std::int64_t binc = 0;
     int movestogo = 0;
+    bool ponder = false;
     bool infinite = false;
 };
 

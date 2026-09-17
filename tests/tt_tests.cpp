@@ -33,15 +33,15 @@ void write(
     probe.writer.write(data, force);
 }
 
-static_assert(MAX_TT_SIZE_MB == 8'589'934'592ULL);
-static_assert(MAX_TT_SIZE_MB * 1024ULL * 1024ULL == (1ULL << 53));
+static_assert(MAX_TT_SIZE_MB == 2'147'483'647ULL);
+static_assert(MAX_TT_SIZE_MB * 1024ULL * 1024ULL == (1ULL << 51) - (1ULL << 20));
 
 bool test_size_limit() {
     TranspositionTable table(1);
     const auto original_bytes = table.size_bytes();
     try {
         table.resize(MAX_TT_SIZE_MB + 1);
-        return expect(false, "sizes beyond 8 PiB must be rejected");
+        return expect(false, "sizes beyond the signed 32-bit UCI limit must be rejected");
     } catch (const std::length_error&) {
         return expect(table.size_bytes() == original_bytes,
                       "rejected resize must preserve the existing table");

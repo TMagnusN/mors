@@ -79,13 +79,16 @@ bool run_uci_tests() {
              << "setoption name Threads value 0\n"
              << "setoption name Threads value 22529\n"
              << "setoption name Hash value 0\n"
-             << "setoption name Hash value 8589934593\n"
+             << "setoption name Hash value 2147483648\n"
              << "setoption name Hash value 2\n"
              << "setoption name Clear Hash\n"
              << "setoption name EvalFile value " << network.string() << "\n"
              << "setoption name EvalFile value mors-p2h32-s14400M-o3183M-c+frc.mnue\n"
              << "setoption name EvalFile value __missing_mors_network__.mnue\n"
              << "setoption name Move Overhead value 25\n"
+             << "setoption name Ponder value false\n"
+             << "setoption name Ponder value invalid\n"
+             << "setoption name Ponder value true\n"
              << "setoption name UCI_Chess960 value true\n"
              << "position fen 4k3/8/8/8/8/8/8/R5KR w AH - 0 1 moves g1h1\n"
              << "d\n"
@@ -106,6 +109,10 @@ bool run_uci_tests() {
              << "position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\n"
              << "go wtime 1000 btime 1000 winc 10 binc 10 movestogo 20\n"
              << "stop\n"
+             << "position startpos\n"
+             << "go ponder movetime 20\n"
+             << "ponderhit\n"
+             << "stop\n"
              << "quit\n";
     std::istringstream input{commands.str()};
     std::ostringstream output;
@@ -118,16 +125,16 @@ bool run_uci_tests() {
     const bool passed =
            expect_contains(
                text,
-               "Dragon of MORS 0.2.0 by Theodore M. A. Øen (USA) & Codex (USA) (see AUTHORS file)\n",
+               "Dragon of MORS 0.2.1 by Theodore M. A. Øen (USA) & Codex (USA) (see AUTHORS file)\n",
                "startup banner must credit both authors"
            )
-        && expect_contains(text, "id name Dragon of MORS 0.2.0\n", "engine id must be emitted")
+        && expect_contains(text, "id name Dragon of MORS 0.2.1\n", "engine id must be emitted")
         && expect_contains(text, "id author Theodore M. A. Øen (USA) & Codex (USA)\n",
                            "author id must be emitted")
-        && expect_contains(text, "option name Hash type spin default 256 min 1 max 8589934592\n",
-                           "Hash must advertise the 8 PiB limit in MiB")
+        && expect_contains(text, "option name Hash type spin default 256 min 1 max 2147483647\n",
+                           "Hash must advertise a signed 32-bit-safe limit in MiB")
         && expect(occurrence_count(text,
-                       "info string Hash must be between 1 and 8589934592 MiB\n") == 2,
+                       "info string Hash must be between 1 and 2147483647 MiB\n") == 2,
                   "zero and above-limit Hash values must be rejected")
         && expect_not_contains(text, "Hash resize failed:",
                                "invalid sizes must be rejected before allocation")
@@ -146,6 +153,10 @@ bool run_uci_tests() {
                            "network path option must be advertised")
         && expect_contains(text, "option name UCI_Chess960 type check default false\n",
                            "Chess960 mode must be advertised")
+        && expect_contains(text, "option name Ponder type check default true\n",
+                           "ponder support must be advertised")
+        && expect_contains(text, "info string Ponder must be true or false\n",
+                           "invalid Ponder values must be rejected")
         && expect_contains(text, "option name NumaPolicy type combo default auto var auto var none\n",
                            "NUMA policy must be advertised")
         && expect_contains(text, "info string NumaPolicy must be auto or none\n",
@@ -212,8 +223,10 @@ bool run_uci_tests() {
         && expect_contains(text, "bestmove ", "search must emit bestmove")
         && expect_not_contains(text, "search busy",
                                "stop must join before the next command")
-        && expect(occurrence_count(text, "bestmove ") == 2,
-                  "both timed searches must emit bestmove");
+        && expect_not_contains(text, "ponderhit ignored",
+                               "active ponder search must accept ponderhit")
+        && expect(occurrence_count(text, "bestmove ") == 3,
+                  "timed and ponder searches must emit bestmove");
 
     if (passed)
         std::cout << "PASS UCI timed search lifecycle\n";

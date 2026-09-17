@@ -31,11 +31,14 @@ bool run_time_tests() {
     mors::SearchLimits limits;
     mors::timeman::GoParams fixed;
     fixed.movetime = 250;
+    fixed.ponder = true;
     if (!expect(manager.build_limits(*white, fixed, limits),
                 "movetime must build limits")
         || !expect(limits.soft_time.count() == 250
                        && limits.hard_time.count() == 250,
-                   "movetime must use identical soft and hard budgets")) {
+                   "movetime must use identical soft and hard budgets")
+        || !expect(limits.ponder,
+                   "time manager must preserve ponder mode")) {
         return false;
     }
 

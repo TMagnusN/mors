@@ -60,6 +60,8 @@ bool TimeManager::build_limits(
         : std::numeric_limits<std::uint64_t>::max();
     limits.soft_time = {};
     limits.hard_time = {};
+    limits.ponder = params.ponder;
+    limits.time_control = nullptr;
 
     if (params.movetime > 0) {
         limits.soft_time = milliseconds(params.movetime);

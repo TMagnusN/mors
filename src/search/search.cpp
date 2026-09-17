@@ -35,6 +35,12 @@
 #include <vector>
 
 namespace mors {
+
+struct SearchTimeControl final {
+    std::atomic_bool pondering{false};
+    std::atomic<std::int64_t> start_nanoseconds{0};
+};
+
 namespace {
 
 inline constexpr int TT_MOVE_SCORE = 1'000'000;
@@ -70,6 +76,36 @@ inline constexpr Value QS_SEE_MARGIN = 74;
 inline constexpr Value QS_SEE_GAP_DIVISOR = 8;
 inline constexpr std::size_t QS_LMP_MOVE_LIMIT = 2;
 inline constexpr Bitboard ONE_SQUARE_COLOR = 0xAA55'AA55'AA55'AA55ULL;
+
+using SearchClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::int64_t clock_nanoseconds(
+    SearchClock::time_point time
+) noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        time.time_since_epoch()
+    ).count();
+}
+
+[[nodiscard]] SearchClock::time_point controlled_start_time(
+    const SearchLimits& limits
+) noexcept {
+    if (limits.time_control == nullptr)
+        return limits.start_time;
+    return SearchClock::time_point{
+        std::chrono::nanoseconds{
+            limits.time_control->start_nanoseconds.load(
+                std::memory_order_acquire
+            )
+        }
+    };
+}
+
+[[nodiscard]] bool pondering_active(const SearchLimits& limits) noexcept {
+    return limits.ponder
+        && limits.time_control != nullptr
+        && limits.time_control->pondering.load(std::memory_order_acquire);
+}
 
 struct PvTable final {
     std::array<std::array<Move, MAX_PLY>, MAX_PLY + 1> moves{};
@@ -151,10 +187,6 @@ struct Context final {
     SearchStats stats{};
     std::optional<syzygy::RootProbe> root_tb;
     bool stopped = false;
-    std::chrono::steady_clock::time_point soft_deadline =
-        limits.start_time + limits.soft_time;
-    std::chrono::steady_clock::time_point hard_deadline =
-        limits.start_time + limits.hard_time;
 };
 
 class MoveGuard final {
@@ -222,9 +254,12 @@ private:
     // Clock reads are substantially more expensive than an atomic stop flag.
     // Poll the hard deadline every 64 nodes; the root of a fresh search is
     // always checked because the node counter starts at zero.
-    if (context.limits.hard_time.count() > 0
+    if (!pondering_active(context.limits)
+        && context.limits.hard_time.count() > 0
         && (context.stats.nodes & 63U) == 0
-        && std::chrono::steady_clock::now() >= context.hard_deadline) {
+        && SearchClock::now()
+            >= controlled_start_time(context.limits)
+                + context.limits.hard_time) {
         context.stopped = true;
         return false;
     }
@@ -1521,11 +1556,26 @@ public:
             if (iteration_callback)
                 iteration_callback(result);
 
-            if (limits.soft_time.count() > 0
-                && std::chrono::steady_clock::now() >= context.soft_deadline) {
+            if (!pondering_active(limits)
+                && limits.soft_time.count() > 0
+                && SearchClock::now()
+                    >= controlled_start_time(limits) + limits.soft_time) {
                 context.stopped = true;
                 break;
             }
+        }
+
+        // A ponder search must remain active even if it reaches its requested
+        // depth before the GUI confirms the predicted move. On ponderhit the
+        // same search result is released; on stop the normal cancellation path
+        // is used. Ordinary time limits are disabled while this loop is active.
+        while (pondering_active(limits)) {
+            if (limits.stop != nullptr
+                && limits.stop->load(std::memory_order_acquire)) {
+                context.stopped = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         result.stopped = context.stopped;
@@ -1737,6 +1787,26 @@ public:
         stop_requested_.store(true, std::memory_order_release);
     }
 
+    [[nodiscard]] bool ponderhit() noexcept {
+        const std::lock_guard lock(mutex_);
+        if (!active_ || !job_.has_value() || !job_->limits.ponder
+            || !job_->time_control.pondering.load(
+                std::memory_order_acquire
+            )) {
+            return false;
+        }
+
+        job_->time_control.start_nanoseconds.store(
+            clock_nanoseconds(SearchClock::now()),
+            std::memory_order_relaxed
+        );
+        job_->time_control.pondering.store(
+            false,
+            std::memory_order_release
+        );
+        return true;
+    }
+
     void wait() {
         std::unique_lock lock(mutex_);
         idle_cv_.wait(lock, [this] { return !active_; });
@@ -1780,11 +1850,21 @@ private:
             }
             limits.prior_keys = std::span<const Key>(prior_keys);
             limits.stop = &job_stop;
+            time_control.start_nanoseconds.store(
+                clock_nanoseconds(requested_limits.start_time),
+                std::memory_order_relaxed
+            );
+            time_control.pondering.store(
+                requested_limits.ponder,
+                std::memory_order_relaxed
+            );
+            limits.time_control = &time_control;
         }
 
         Position root;
         std::vector<Key> prior_keys;
         SearchLimits limits;
+        SearchTimeControl time_control;
         CompletionCallback completion;
         std::unique_ptr<WorkerSharedState[]> worker_states;
         std::atomic<std::uint64_t> shared_node_count{0};
@@ -2114,6 +2194,10 @@ void SearchThreadPool::start(
 
 void SearchThreadPool::request_stop() noexcept {
     impl_->request_stop();
+}
+
+bool SearchThreadPool::ponderhit() noexcept {
+    return impl_->ponderhit();
 }
 
 void SearchThreadPool::wait() {

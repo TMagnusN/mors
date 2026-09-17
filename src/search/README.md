@@ -400,10 +400,10 @@ Killer、countermove、PV、repetition keys 與 NNUE 搜尋堆疊仍屬於每次
 
 ## Hash 容量上限
 
-UCI 與 TT resize 共用 `MAX_TT_SIZE_MB = 8,589,934,592` MiB，也就是 8 PiB。
-索引使用 Zobrist key 的高 48 bits，每個 cluster 為 32 bytes，因此完整利用
-索引的容量界線是 `2^48 × 32 = 2^53` bytes。實際配置仍受可用記憶體、
-作業系統位址空間與配置器限制；提高選項上限不代表能在一般機器配置 8 PiB。
+UCI 與 TT resize 共用 `MAX_TT_SIZE_MB = 2,147,483,647` MiB，也就是 2 PiB 減 1 MiB。
+這個上限可由 signed 32-bit GUI／工具安全解析。索引仍使用 Zobrist key 的高 bits，
+每個 cluster 仍為 32 bytes。實際配置仍受可用記憶體、
+作業系統位址空間與配置器限制。
 預設 Hash 為 256 MiB，超限輸入在配置前拒絕。
 
 ## 目前 TT 版面
